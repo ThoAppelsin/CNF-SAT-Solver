@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
-#define BUFSIZ 1024
+#include <string.h>
+#define BUFFERSIZE 1024
 #define EXPLPC 4
 
 typedef
@@ -80,13 +81,12 @@ void lits_add(Formula * formula, int lit)
 
 Formula * read(FILE * fp)
 {
-	char buffer[BUFSIZ];
-	char * bufptr;
+	char buffer[BUFFERSIZE];
 
-	int n_vars;
-	int n_clauses;
+	int n_vars = 0;
+	int n_clauses = 0;
 
-	while (fgets(buffer, BUFSIZ, fp) != NULL)
+	while (fgets(buffer, BUFFERSIZE, fp) != NULL)
 	{
 		if (*buffer == 'c') {
 			// a comment
@@ -94,13 +94,13 @@ Formula * read(FILE * fp)
 		else if (*buffer == 'p') {
 			// the spec
 			if (sscanf(buffer, "p cnf %d %d", &n_vars, &n_clauses) != 2) {
-				fputs(stderr, "Error at the spec line.");
+				fputs("Error at the spec line.\n", stderr);
 				return NULL;
 			}
 			break;
 		}
 		else {
-			fputs(stderr, "Couldn't find spec line as the first non-comment line.\n");
+			fputs("Couldn't find spec line as the first non-comment line.\n", stderr);
 			return NULL;
 		}
 	}
@@ -109,7 +109,7 @@ Formula * read(FILE * fp)
 
 	int i_clause = 0;
 
-	while (i_clause < result->n_clauses && fgets(buffer, BUFSIZ, fp) != NULL)
+	while (i_clause < result->n_clauses && fgets(buffer, BUFFERSIZE, fp) != NULL)
 	{
 		if (*buffer == 'c') {
 			// a comment
@@ -152,17 +152,20 @@ Formula * read(FILE * fp)
 int main(int argc, char const *argv[])
 {
 	if (argc != 2) {
-		fputs(stderr, "Usage: ugsat problem.cnf\n");
+		fputs("Usage: ugsat problem.cnf\n", stderr);
 		return -1;
 	}
 
 	FILE * fp = fopen(argv[1], "r");
-	if (fp = NULL) {
+	if (fp == NULL) {
 		perror("Error opening file.");
 		return -1;
 	}
 
-	read(fp);
+	Formula * formula = read(fp);
+	if (formula == NULL) {
+		return -1;
+	}
 
 	return 0;
 }
