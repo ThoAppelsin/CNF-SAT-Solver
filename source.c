@@ -10,7 +10,7 @@ struct Formula_tag
 	int n_vars;			// variable count, constant during dpll
 	int n_clauses;		// clause count, decreases during dpll
 	int n_lits;			// literal count, constant during dpll
-	int ** occurlist;		// list (n_vars + 1) of null-terminated, non-zero arrays (arbitrary)
+	int ** occurlist;		// list (n_vars + 1) of min1-terminated, non-zero arrays (arbitrary)
 	int * off_clauses;		// array (n_clauses + 1) of increasing numbers, starting with zero
 	int * lits;				// list (n_lits) of literals for the whole formula
 								// zero implies absence of literal, n_vars + 1 is a clause boundary
@@ -54,27 +54,27 @@ void occurlist_add(Formula * formula, int var, int offset)
 	if (formula->occurlist[var] == NULL) {
 		formula->occurlist[var] = malloc(EXPLPC * sizeof * formula->occurlist[var]);
 		formula->occurlist[var][0] = offset;
-		formula->occurlist[var][1] = 0;
-		formula->occurlist[var][EXPLPC - 1] = -1;
+		formula->occurlist[var][1] = -1;
+		formula->occurlist[var][EXPLPC - 1] = -2;
 		return;
 	}
 
 	int end = 0;
-	while (formula->occurlist[var][end] > 0) end++;
+	while (formula->occurlist[var][end] >= 0) end++;
 
 	formula->occurlist[var][end++] = offset;
-	if (formula->occurlist[var][end] == -1) {
+	if (formula->occurlist[var][end] == -2) {
 		formula->occurlist[var] = realloc(formula->occurlist[var], 2 * (end + 1) * sizeof * formula->occurlist[var]);
-		formula->occurlist[var][2 * end + 1] = -1;
+		formula->occurlist[var][2 * end + 1] = -2;
 	}
-	formula->occurlist[var][end] = 0;
+	formula->occurlist[var][end] = -1;
 }
 
 void occurlist_remove(Formula * formula, int var, int offset)
 {
-	for (int * occur = formula->occurlist[var]; *occur != 0; occur++) {
+	for (int * occur = formula->occurlist[var]; *occur != -1; occur++) {
 		if (*occur == offset) {
-			while (*occur != 0) {
+			while (*occur != -1) {
 				*occur = *(occur + 1);
 				occur++;
 			}
@@ -233,41 +233,58 @@ Formula * read(FILE * fp)
 	return result;
 }
 
+// returns the new would-be index (it should be removed now) of the clause
 int unit_propagate(Formula * formula, int clause_i)
 {
 	int var = clause_get(formula, clause_i)[0];
 	int * occur = formula->occurlist[var];
+	int shift = 0;
 
 	while (*occur != 0) {
 		if (formula->lits[*occur] == var) {
-			clause_remove(formula, clause_i_for_offset(formula, *occur));
+			int ci = clause_i_for_offset(formula, *occur);
+			if (formula->off_clauses[ci] <= formula->off_clauses[clause_i])
+				shift++;
+			clause_remove(formula, ci);
 		}
 		else {
 			lits_remove(formula, *occur);
 		}
 	}
+
+	return clause_i - shift;
 }
 
-int dpll(Formula * formula)
+int empty_clause_and_unit_propagate(Formula * formula)
 {
-	int * uc_indices = malloc(formula->n_clauses * sizeof * uc_indices);
-	int uc_indices_size = 0;
+	int retry_until = 0;
+	int i = 0;
 
-	for (int i = 0; i < formula->n_clauses; i++) {
+	do for (i = 0; i < formula->n_clauses && i != retry_until; i++) {
 		int len_clause = clause_length(formula, i);
 
 		switch (len_clause)
 		{
 			case 0: return 0;
 			case 1:
-				uc_indices[uc_indices_size++] = i;
+				i = unit_propagate(formula, i);
+				retry_until = i;
 				break;
 		}
-	}
+	} while (i != retry_until);
+}
 
-	int * clauses_to_delete = calloc(formula->n_clauses, sizeof * clauses_to_delete);
-	for (int i = 0; i < uc_indices_size; i++) {
+void pure_literal_assignment(Formula * formula)
+{
+	for (int i = 1; i < formula->n_vars; i++) {
 	}
+}
+
+int dpll(Formula * formula)
+{
+	int empty_clause = !empty_clause_and_unit_propagate(formula);
+	if (empty_clause) return 0;
+	pure_literal_assignment(formula);
 }
 
 int main(int argc, char const *argv[])
