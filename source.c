@@ -156,6 +156,7 @@ void lits_add(Formula * formula, int lit)
 
 void lits_remove(Formula * formula, int offset)
 {
+	occurlist_remove(formula, formula->lits[offset], offset);
 	formula->lits[offset] = 0;
 }
 
@@ -235,25 +236,14 @@ Formula * read(FILE * fp)
 int unit_propagate(Formula * formula, int clause_i)
 {
 	int var = clause_get(formula, clause_i)[0];
-	int * occurlist = formula->occurlist[var];
+	int * occur = formula->occurlist[var];
 
-	if (occurlist != NULL) {
-		for (int * occur = occurlist; *occur; occur++) {
-			int clause_i = clause_i_for_offset(formula, *occur);
-			if (formula->lits[*occur] == var) {
-				clause_remove(formula, clause_i);
-			}
-			else {
-				lits_remove(formula, *occur);
-			}
+	while (*occur != 0) {
+		if (formula->lits[*occur] == var) {
+			clause_remove(formula, clause_i_for_offset(formula, *occur));
 		}
-	}
-	for (int i = 0; i < clause_i; i++) {
-		int * p_lit = clause_get(formula, i);
-		for (int lit = *p_lit; lit != 0; lit = *++p_lit) {
-			if (lit == var) {
-
-			}
+		else {
+			lits_remove(formula, *occur);
 		}
 	}
 }
