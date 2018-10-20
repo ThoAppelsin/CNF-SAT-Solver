@@ -113,12 +113,17 @@ Formula * new_formula(int n_vars, int n_clauses)
 	return result;
 }
 
+int * memory_copy(int * src, int n)
+{
+	int size = n * sizeof * src;
+	int * res = malloc(size);
+	memcpy(res, src, size);
+	return res;
+}
+
 int * copy_occur(int * occur)
 {
-	int list_size = occurlist_length(occur);
-	int * result = malloc(list_size * sizeof * result);
-	memcpy(result, occur, list_size);
-	return result;
+	return memory_copy(occur, occurlist_length(occur));
 }
 
 int ** copy_occurlist(Formula * formula)
@@ -130,22 +135,32 @@ int ** copy_occurlist(Formula * formula)
 	return result;
 }
 
+int * copy_off_clauses(Formula * formula)
+{
+	return memory_copy(formula->off_clauses, formula->n_clauses + 1);
+}
+
+int * copy_lits(Formula * formula)
+{
+	return memory_copy(formula->lits, formula->n_lits);
+}
+
 Formula * copy_formula(Formula * formula)
 {
-	Formula * result = malloc(sizeof * result);
+	Formula * res = malloc(sizeof * res);
 
-	result->n_vars = formula->n_vars;
-	result->n_clauses = formula->n_clauses;
-	result->n_lits = formula->n_lits;
+	res->n_vars = formula->n_vars;
+	res->n_clauses = formula->n_clauses;
+	res->n_lits = formula->n_lits;
 
 	// copy the occurlist
-	result->occurlist = copy_occurlist(formula);
-	memcpy(result->off_clauses, formula->off_clauses, result->n_clauses + 1);
-	memcpy(result->lits, formula->lits, result->n_lits);
+	res->occurlist = copy_occurlist(formula);
+	res->off_clauses = copy_off_clauses(formula);
+	res->lits = copy_lits(formula);
 
-	result->i_lit = formula->i_lit;
+	res->i_lit = formula->i_lit;
 
-	return result;
+	return res;
 }
 
 Formula * del_formula(Formula * formula)
@@ -460,6 +475,7 @@ int main(int argc, char const *argv[])
 
 	Formula * formula = read(fp);
 	if (formula == NULL) {
+		fputs("Formula is NULL\n", stderr);
 		return -1;
 	}
 
