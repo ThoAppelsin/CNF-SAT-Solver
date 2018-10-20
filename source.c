@@ -202,16 +202,18 @@ Pair clause_length(Formula * formula, int clause_i)
 
 void clause_remove(Formula * formula, int clause_i)
 {
+	const int clause_tombstone = formula->n_vars + 1;
 	int * clause = clause_get(formula, clause_i);
 
 	int maxlen = clause_maxlen(formula, clause_i);
-	for (int i = 0; i < maxlen && clause[i] != formula->n_vars + 1; i++)
+	for (int i = 0; i < maxlen && clause[i] != clause_tombstone; i++)
 		if (clause[i] != 0)
 			occurlist_lit_remove(formula, formula->off_clauses[clause_i] + i);
 
-	clause[0] = formula->n_vars + 1;
+	clause[0] = clause_tombstone;
 
-	for (int i = clause_i; i < formula->n_clauses - 1; i++) {
+	// shifting all the clause offsets, including the extra final tick
+	for (int i = clause_i; i < formula->n_clauses; i++) {
 		formula->off_clauses[i] = formula->off_clauses[i + 1];
 	}
 
