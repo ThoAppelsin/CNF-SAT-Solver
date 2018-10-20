@@ -3,6 +3,8 @@
 #include <string.h>
 #define BUFFERSIZE 1024
 #define EXPLPC 4
+#define OL_END -1
+#define OL_FIN -2
 
 typedef
 struct Formula_tag
@@ -16,6 +18,56 @@ struct Formula_tag
 								// zero implies absence of literal, n_vars + 1 is a clause boundary
 	int i_lit;
 } Formula;
+
+typedef
+struct Pair_tag
+{
+	int a;
+	int b;
+} Pair;
+
+void occurlist_add(Formula * formula, int var, int offset)
+{
+	if (formula->occurlist[var] == NULL) {
+		formula->occurlist[var] = malloc(EXPLPC * sizeof * formula->occurlist[var]);
+		formula->occurlist[var][0] = offset;
+		formula->occurlist[var][1] = OL_END;
+		formula->occurlist[var][EXPLPC - 1] = OL_FIN;
+		return;
+	}
+
+	int end = 0;
+	while (formula->occurlist[var][end] > OL_END) end++;
+
+	formula->occurlist[var][end++] = offset;
+	if (formula->occurlist[var][end] == OL_FIN) {
+		formula->occurlist[var] = realloc(formula->occurlist[var], 2 * (end + 1) * sizeof * formula->occurlist[var]);
+		formula->occurlist[var][2 * end + 1] = OL_FIN;
+	}
+	formula->occurlist[var][end] = OL_END;
+}
+
+void occurlist_lit_remove(Formula * formula, int offset)
+{
+	int var = abs(formula->lits[offset]);
+	for (int * occur = formula->occurlist[var]; *occur != OL_END; occur++) {
+		if (*occur == offset) {
+			while (*occur != OL_END) {
+				*occur = *(occur + 1);
+				occur++;
+			}
+			break;
+		}
+	}
+}
+
+void occurlist_var_remove(Formula * formula, int var)
+{
+	if (formula->occurlist[var] != NULL) {
+		free(formula->occurlist[var]);
+		formula->occurlist[var] = NULL;
+	}
+}
 
 Formula * new_formula(int n_vars, int n_clauses)
 {
@@ -36,51 +88,17 @@ Formula * new_formula(int n_vars, int n_clauses)
 	return result;
 }
 
-void del_formula(Formula * formula)
+Formula * del_formula(Formula * formula)
 {
-	for (int i = 0; i < formula->n_vars; i++)
-		if (formula->occurlist[i])
-			free(formula->occurlist[i]);
+	for (int i = 1; i < formula->n_vars; i++)
+		occurlist_var_remove(formula, i);
 
 	free(formula->occurlist);
 	free(formula->off_clauses);
 	free(formula->lits);
 
 	free(formula);
-}
-
-void occurlist_add(Formula * formula, int var, int offset)
-{
-	if (formula->occurlist[var] == NULL) {
-		formula->occurlist[var] = malloc(EXPLPC * sizeof * formula->occurlist[var]);
-		formula->occurlist[var][0] = offset;
-		formula->occurlist[var][1] = -1;
-		formula->occurlist[var][EXPLPC - 1] = -2;
-		return;
-	}
-
-	int end = 0;
-	while (formula->occurlist[var][end] >= 0) end++;
-
-	formula->occurlist[var][end++] = offset;
-	if (formula->occurlist[var][end] == -2) {
-		formula->occurlist[var] = realloc(formula->occurlist[var], 2 * (end + 1) * sizeof * formula->occurlist[var]);
-		formula->occurlist[var][2 * end + 1] = -2;
-	}
-	formula->occurlist[var][end] = -1;
-}
-
-void occurlist_remove(Formula * formula, int var, int offset)
-{
-	for (int * occur = formula->occurlist[var]; *occur != -1; occur++) {
-		if (*occur == offset) {
-			while (*occur != -1) {
-				*occur = *(occur + 1);
-				occur++;
-			}
-			break;
-		}
-	}
+	return NULL;
 }
 
 int * clause_get(Formula * formula, int i)
@@ -93,15 +111,18 @@ int clause_maxlen(Formula * formula, int i)
 	return formula->off_clauses[i + 1] - formula->off_clauses[i];
 }
 
-int clause_length(Formula * formula, int clause_i)
+Pair clause_length(Formula * formula, int clause_i)
 {
 	int * clause = clause_get(formula, clause_i);
-	int len = 0;
+	Pair len_last = { 0, 0 };
 	int maxlen = clause_maxlen(formula, clause_i);
-	for (int i = 0; i < maxlen && clause[i] != formula->n_vars + 1; i++)
-		if (clause[i] != 0)
-			len++;
-	return len;
+	for (int i = 0; i < maxlen && clause[i] != formula->n_vars + 1; i++) {
+		if (clause[i] != 0) {
+			len_last.a++;
+			len_last.b = clause[i];
+		}
+	}
+	return len_last;
 }
 
 void clause_remove(Formula * formula, int clause_i)
@@ -111,7 +132,7 @@ void clause_remove(Formula * formula, int clause_i)
 	int maxlen = clause_maxlen(formula, clause_i);
 	for (int i = 0; i < maxlen && clause[i] != formula->n_vars + 1; i++)
 		if (clause[i] != 0)
-			occurlist_remove(formula, clause[i], formula->off_clauses[clause_i] + i);
+			occurlist_lit_remove(formula, formula->off_clauses[clause_i] + i);
 
 	clause[0] = formula->n_vars + 1;
 
@@ -156,7 +177,7 @@ void lits_add(Formula * formula, int lit)
 
 void lits_remove(Formula * formula, int offset)
 {
-	occurlist_remove(formula, formula->lits[offset], offset);
+	occurlist_lit_remove(formula, offset);
 	formula->lits[offset] = 0;
 }
 
@@ -220,28 +241,26 @@ Formula * read(FILE * fp)
 
 	if (i_clause != result->n_clauses) {
 		fprintf(stderr, "%d/%d clauses are missing.\n", result->n_clauses - i_clause, result->n_clauses);
-		free(result->lits);
-		return result;
+		return del_formula(result);
 	}
 
 	if (ferror(fp)) {
 		perror("Error reading file.");
-		free(result->lits);
-		return result;
+		return del_formula(result);
 	}
 
 	return result;
 }
 
 // returns the new would-be index (it should be removed now) of the clause
-int unit_propagate(Formula * formula, int clause_i)
+int unit_propagate(Formula * formula, int clause_i, int unit)
 {
-	int var = clause_get(formula, clause_i)[0];
+	int var = abs(unit);
 	int * occur = formula->occurlist[var];
 	int shift = 0;
 
-	while (*occur != 0) {
-		if (formula->lits[*occur] == var) {
+	while (*occur != OL_END) {
+		if (formula->lits[*occur] == unit) {
 			int ci = clause_i_for_offset(formula, *occur);
 			if (formula->off_clauses[ci] <= formula->off_clauses[clause_i])
 				shift++;
@@ -252,32 +271,73 @@ int unit_propagate(Formula * formula, int clause_i)
 		}
 	}
 
+	occurlist_var_remove(formula, var);
+
 	return clause_i - shift;
 }
 
+// since unit propagation may introduce new unit clauses, this repeats itself until no change
 int empty_clause_and_unit_propagate(Formula * formula)
 {
 	int retry_until = 0;
 	int i = 0;
 
 	do for (i = 0; i < formula->n_clauses && i != retry_until; i++) {
-		int len_clause = clause_length(formula, i);
+		Pair len_last = clause_length(formula, i);
 
-		switch (len_clause)
+		switch (len_last.a)
 		{
 			case 0: return 0;
 			case 1:
-				i = unit_propagate(formula, i);
+				i = unit_propagate(formula, i, len_last.b);
 				retry_until = i;
 				break;
 		}
 	} while (i != retry_until);
 }
 
+int get_occurence(Formula * formula, int var, int i)
+{
+	if (formula->occurlist[var][i] == OL_END) return 0;
+	return formula->lits[formula->occurlist[var][i]];
+}
+
+int get_pure(Formula * formula, int var)
+{
+	if (formula->occurlist[var] == NULL) return 0;
+
+	int candidate = get_occurence(formula, var, 0);
+	if (candidate == 0) return 0;
+
+	for (int i = 1; ; i++) {
+		int offender = get_occurence(formula, var, i);
+		if (offender == 0) return candidate;
+		if (offender != candidate) return 0;
+	}
+}
+
+void pure_literal_propagate(Formula * formula, int var)
+{
+	int * occur = formula->occurlist[var];
+	while (*occur != OL_END)
+		clause_remove(formula, clause_i_for_offset(formula, *occur));
+
+	free(formula->occurlist[var]);
+	formula->occurlist[var] = NULL;
+}
+
+// since pure literal propagations may introduce new ones, this repeats itself until no change
 void pure_literal_assignment(Formula * formula)
 {
-	for (int i = 1; i < formula->n_vars; i++) {
-	}
+	int retry_until = 1;
+	int var = 1;
+
+	do for (var = 1; var < formula->n_vars && var != retry_until; var++) {
+		int pure = get_pure(formula, var);
+		if (pure == 0) continue;
+
+		pure_literal_propagate(formula, var);
+	} while (var != retry_until);
 }
 
 int dpll(Formula * formula)
