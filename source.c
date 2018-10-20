@@ -359,7 +359,7 @@ int empty_clause_and_unit_propagate(Formula * formula)
 	int retry_last = formula->n_clauses - 1;
 	int i = 0;
 
-	while (1) {
+	while (formula->n_clauses != 0) {
 		for (i = 0; i < formula->n_clauses; i++) {
 			Pair len_last = clause_length(formula, i);
 
@@ -368,13 +368,14 @@ int empty_clause_and_unit_propagate(Formula * formula)
 				case 0: return 0;
 				case 1:
 					i = unit_propagate(formula, i, len_last.b);
-					retry_last = i;
+					retry_last = (i >= 0) ? i : formula->n_clauses - 1;
 					continue;
 			}
 
 			if (i == retry_last) return 1;
 		}
 	}
+	return 2;
 }
 
 int get_occurence(Formula * formula, int var, int i)
@@ -450,12 +451,12 @@ int consistent(Formula * formula)
 
 int dpll(Formula * formula)
 {
-	if (consistent(formula))
-		return 1;
-
 	if (empty_clause_and_unit_propagate(formula) == 0)
 		return 0;
 	pure_variable_assignment(formula);
+
+	if (consistent(formula))
+		return 1;
 
 	// choose a variable and recurse and recurse with its both modalities
 	int var = choose_var_first(formula);
