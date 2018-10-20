@@ -12,7 +12,7 @@ struct Formula_tag
 	int n_vars;			// variable count, constant during dpll
 	int n_clauses;		// clause count, decreases during dpll
 	int n_lits;			// literal count, constant during dpll
-	int ** occurlist;		// list (n_vars + 1) of min1-terminated, non-zero arrays (arbitrary)
+	int ** occurlist;		// list (n_vars + 1) of OL_END-terminated, non-zero arrays (arbitrary)
 	int * off_clauses;		// array (n_clauses + 1) of increasing numbers, starting with zero
 	int * lits;				// list (n_lits) of literals for the whole formula
 								// zero implies absence of literal, n_vars + 1 is a clause boundary
@@ -25,6 +25,13 @@ struct Pair_tag
 	int a;
 	int b;
 } Pair;
+
+int occurlist_length(int * occur)
+{
+	int i = 0;
+	while (occur[i++] != OL_END);
+	return i;
+}
 
 void occurlist_add(Formula * formula, int var, int offset)
 {
@@ -69,6 +76,24 @@ void occurlist_var_remove(Formula * formula, int var)
 	}
 }
 
+unsigned int occurlist_var_state(Formula * formula, int var)
+{
+	unsigned int state = 0b00;
+	int * occur = formula->occurlist[var];
+
+	if (occur == NULL) return state;
+	while (*occur != OL_END) {
+		if (formula->lits[*occur] > 0)
+			state |= 0b01;
+		else	// occurlist is supposed to point existent literals, no absent/zero literals
+			state |= 0b10;
+		if (state & 0b11) return state;
+		occur++;
+	}
+
+	return state;
+}
+
 Formula * new_formula(int n_vars, int n_clauses)
 {
 	Formula * result = malloc(sizeof * result);
@@ -84,6 +109,41 @@ Formula * new_formula(int n_vars, int n_clauses)
 	result->lits = malloc(result->n_lits * sizeof * result->lits);
 
 	result->i_lit = 0;
+
+	return result;
+}
+
+int * copy_occur(int * occur)
+{
+	int list_size = occurlist_length(occur);
+	int * result = malloc(list_size * sizeof * result);
+	memcpy(result, occur, list_size);
+	return result;
+}
+
+int ** copy_occurlist(Formula * formula)
+{
+	int ** result = malloc((formula->n_vars + 1) * sizeof * result);
+	for (int var = 0; var <= formula->n_vars; var++)
+		result[var] = formula->occurlist[var] ? copy_occur(formula->occurlist[var]) : NULL;
+
+	return result;
+}
+
+Formula * copy_formula(Formula * formula)
+{
+	Formula * result = malloc(sizeof * result);
+
+	result->n_vars = formula->n_vars;
+	result->n_clauses = formula->n_clauses;
+	result->n_lits = formula->n_lits;
+
+	// copy the occurlist
+	result->occurlist = copy_occurlist(formula);
+	memcpy(result->off_clauses, formula->off_clauses, result->n_clauses + 1);
+	memcpy(result->lits, formula->lits, result->n_lits);
+
+	result->i_lit = formula->i_lit;
 
 	return result;
 }
@@ -345,13 +405,44 @@ void pure_variable_assignment(Formula * formula)
 	// retry_until == 0 means it was never set, so there were no pures inside, no need to retry
 }
 
+int dpll(Formula *);
+
+int dpll_with_unit(Formula * formula, int unit)
+{
+	int witness;
+
+	formula = copy_formula(formula);
+	unit_propagate(formula, 0, unit);
+	witness = dpll(formula);
+	del_formula(formula);
+
+	return witness;
+}
+
+int choose_var_first(Formula * formula)
+{
+	for (int var = 1; var < formula->n_vars; var++)
+		if (formula->occurlist[var] != NULL)
+			return var;
+}
+
+int consistent(Formula * formula)
+{
+	return formula->n_clauses == 0;
+}
+
 int dpll(Formula * formula)
 {
+	if (consistent(formula))
+		return 1;
 
 	if (empty_clause_and_unit_propagate(formula) == 0)
 		return 0;
 	pure_variable_assignment(formula);
 
+	// choose a variable and recurse and recurse with its both modalities
+	int var = choose_var_first(formula);
+	return dpll_with_unit(formula, var) || dpll_with_unit(formula, -var);
 }
 
 int main(int argc, char const *argv[])
@@ -372,7 +463,12 @@ int main(int argc, char const *argv[])
 		return -1;
 	}
 
-	dpll(formula);
+	if (dpll(formula)) {
+		puts("Satisfiable!");
+	}
+	else {
+		puts("Unsatisfiable.");
+	}
 
 	return 0;
 }
