@@ -279,21 +279,25 @@ int unit_propagate(Formula * formula, int clause_i, int unit)
 // since unit propagation may introduce new unit clauses, this repeats itself until no change
 int empty_clause_and_unit_propagate(Formula * formula)
 {
-	int retry_until = 0;
+	int retry_last = formula->n_clauses - 1;
 	int i = 0;
 
-	do for (i = 0; i < formula->n_clauses && i != retry_until; i++) {
-		Pair len_last = clause_length(formula, i);
+	while (1) {
+		for (i = 0; i < formula->n_clauses; i++) {
+			Pair len_last = clause_length(formula, i);
 
-		switch (len_last.a)
-		{
-			case 0: return 0;
-			case 1:
-				i = unit_propagate(formula, i, len_last.b);
-				retry_until = i;
-				break;
+			switch (len_last.a)
+			{
+				case 0: return 0;
+				case 1:
+					i = unit_propagate(formula, i, len_last.b);
+					retry_last = i;
+					continue;
+			}
+
+			if (i == retry_last) return 1;
 		}
-	} while (i != retry_until);
+	}
 }
 
 int get_occurence(Formula * formula, int var, int i)
@@ -316,35 +320,38 @@ int get_pure(Formula * formula, int var)
 	}
 }
 
-void pure_literal_propagate(Formula * formula, int var)
+void pure_variable_propagate(Formula * formula, int var)
 {
 	int * occur = formula->occurlist[var];
 	while (*occur != OL_END)
 		clause_remove(formula, clause_i_for_offset(formula, *occur));
 
-	free(formula->occurlist[var]);
-	formula->occurlist[var] = NULL;
+	occurlist_var_remove(formula, var);
 }
 
 // since pure literal propagations may introduce new ones, this repeats itself until no change
-void pure_literal_assignment(Formula * formula)
+void pure_variable_assignment(Formula * formula)
 {
-	int retry_until = 1;
+	int retry_until = 0;
 	int var = 1;
 
 	do for (var = 1; var < formula->n_vars && var != retry_until; var++) {
 		int pure = get_pure(formula, var);
 		if (pure == 0) continue;
 
-		pure_literal_propagate(formula, var);
-	} while (var != retry_until);
+		retry_until = var;
+		pure_variable_propagate(formula, var);
+	} while (retry_until != 0 && var != retry_until);
+	// retry_until == 0 means it was never set, so there were no pures inside, no need to retry
 }
 
 int dpll(Formula * formula)
 {
-	int empty_clause = !empty_clause_and_unit_propagate(formula);
-	if (empty_clause) return 0;
-	pure_literal_assignment(formula);
+
+	if (empty_clause_and_unit_propagate(formula) == 0)
+		return 0;
+	pure_variable_assignment(formula);
+
 }
 
 int main(int argc, char const *argv[])
