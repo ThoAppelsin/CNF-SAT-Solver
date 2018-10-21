@@ -3,8 +3,11 @@
 #include <string.h>
 #define BUFFERSIZE 1024
 #define EXPLPC 4
-#define OL_END -1
-#define OL_FIN -2
+
+#define sign(x) ((x) >= 0 ? 1 : -1)
+
+#define OL_START_POS -1
+#define OL_LEN -2
 
 typedef
 struct Formula_tag
@@ -12,80 +15,73 @@ struct Formula_tag
 	int n_vars;			// variable count, constant during dpll
 	int n_clauses;		// clause count, decreases during dpll
 	int n_lits;			// literal count, constant during dpll
-	int ** occurlist;		// list (n_vars + 1) of OL_END-terminated, non-zero arrays (arbitrary)
+	int ** occurlists;		// 1-indexed list (n_vars) of arrays of clause indices
+								// 0-indexed increasing arrays
+								// sign indicates negative or positive occurrence
+								// -1th index is the start of positives
+								// -2th index is the number of all positives and negatives
 	int * off_clauses;		// array (n_clauses + 1) of increasing numbers, starting with zero
 	int * lits;				// list (n_lits) of literals for the whole formula
 								// zero implies absence of literal, n_vars + 1 is a clause boundary
+	int * clause_lengths;	// list of (n_clauses) many clause length values
 	int i_lit;
-	int * assignments;
+	int * assignments;		// 1-indexed list of (n_vars) of +/- 1s
 } Formula;
 
-typedef
-struct Pair_tag
+int binary_search(int * arr, int len, int x)
 {
-	int a;
-	int b;
-} Pair;
+	int start = 0;
+	int end = len;
 
-int occurlist_length(int * occur)
-{
-	int i = 0;
-	while (occur[i++] != OL_END);
-	return i;
+	while (start < end) {
+		int mid = (start + end) / 2;
+		if (arr[mid] < x)
+			start = mid + 1;
+		else
+			end = mid;
+	}
+
+	return start;
 }
 
-void occurlist_add(Formula * formula, int var, int offset)
+int occurlist_bs(int * occurlist, int cindex)
 {
-	if (formula->occurlist[var] == NULL) {
-		formula->occurlist[var] = calloc(EXPLPC, sizeof * formula->occurlist[var]);
-		formula->occurlist[var][0] = offset;
-		formula->occurlist[var][1] = OL_END;
-		formula->occurlist[var][EXPLPC - 1] = OL_FIN;
-		return;
-	}
-
-	int end = 0;
-	while (formula->occurlist[var][end] > OL_END) end++;
-
-	formula->occurlist[var][end++] = offset;
-	if (formula->occurlist[var][end] == OL_FIN) {
-		size_t old_size = (end + 1) * sizeof * formula->occurlist[var];
-		formula->occurlist[var] = realloc(formula->occurlist[var], 2 * old_size);
-		memset(formula->occurlist[var] + end + 1, 0, old_size);
-		formula->occurlist[var][2 * end + 1] = OL_FIN;
-	}
-	formula->occurlist[var][end] = OL_END;
+	return binary_search(occurlist + 1, occurlist[0], cindex) + 1;
 }
 
-void occurlist_lit_remove(Formula * formula, int offset)
+void occurlist_add(Formula * formula, int lit, int cindex)
 {
-	int var = abs(formula->lits[offset]);
-	for (int * occur = formula->occurlist[var]; *occur != OL_END; occur++) {
-		if (*occur == offset) {
-			while (*occur != OL_END) {
-				*occur = *(occur + 1);
-				occur++;
-			}
-			break;
-		}
-	}
+	int var = abs(lit);
+	int * ol = formula->occurlists[var];
+	int index = occurlist_abs_bs(ol, cindex);
+
+	if (abs(ol[index]) == cindex) return;
+
+	// adding the cindex to the increasing indices
+	for (int i = ol[0]; i >= index; i--)
+		ol[i + 1] = ol[i];
+	ol[index] = cindex * sign(lit);
+	ol[0]++;
 }
 
-void occurlist_var_remove(Formula * formula, int var)
+void occurlist_lit_remove(Formula * formula, int var, int cindex)
 {
-	if (formula->occurlist[var] != NULL) {
-		free(formula->occurlist[var]);
-		formula->occurlist[var] = NULL;
-	}
+	int * ol = formula->occurlists[var];
+	int index = occurlist_bs(ol, cindex);
+	if (ol[index] != cindex) return;
+
+	// removing cindex from increasing indices
+	for ( ; index < ol[0]; index++)
+		ol[index] = ol[index + 1];
+	ol[0]--;
 }
 
 unsigned int occurlist_var_state(Formula * formula, int var)
 {
 	unsigned int state = 0b00;
-	int * occur = formula->occurlist[var];
+	int * ol = formula->occurlists[var];
 
-	if (occur == NULL) return state;
-	while (*occur != OL_END) {
+	for (int i = 1; i <= ol[0]; i++) {
 		if (formula->lits[*occur] > 0)
 			state |= 0b01;
 		else	// occurlist is supposed to point existent literals, no absent/zero literals
@@ -99,22 +95,28 @@ unsigned int occurlist_var_state(Formula * formula, int var)
 
 Formula * new_formula(int n_vars, int n_clauses)
 {
-	Formula * result = malloc(sizeof * result);
+	Formula * f = malloc(sizeof * f);
 
-	result->n_vars = n_vars;
-	result->n_clauses = n_clauses;
-	result->n_lits = n_clauses * EXPLPC;
+	f->n_vars = n_vars;
+	f->n_clauses = n_clauses;
+	f->n_lits = n_clauses * EXPLPC;
 
-	// plus 1 is for variable names starting with 1
-	result->occurlist = calloc(result->n_vars + 1, sizeof * result->occurlist);
+	// variable names starting with 1
+	f->occurlist = malloc(n_vars * sizeof * f->occurlist);
+	f->occurlist--;
+	for (int var = 1; var <= f->n_vars; var++) {
+		f->occurlist[var] = calloc((n_clauses + 1) * sizeof * f->occurlist[var]);
+	}
 	// plus 1 is for algorithm's efficiency
-	result->off_clauses = malloc((result->n_clauses + 1) * sizeof * result->off_clauses);
-	result->lits = malloc(result->n_lits * sizeof * result->lits);
+	f->off_clauses = malloc((n_clauses + 1) * sizeof * f->off_clauses);
+	f->lits = malloc(f->n_lits * sizeof * f->lits);
+	f->clause_lengths = calloc(n_clauses, sizeof * f->clause_lengths);
 
-	result->i_lit = 0;
-	result->assignments = calloc(result->n_vars + 1, sizeof * result->assignments);
+	f->i_lit = 0;
+	f->assignments = calloc(n_vars, sizeof * f->assignments);
+	f->assignments--;
 
-	return result;
+	return f;
 }
 
 int * memory_copy(int * src, int n)
@@ -127,16 +129,17 @@ int * memory_copy(int * src, int n)
 
 int * copy_occur(int * occur)
 {
-	return memory_copy(occur, occurlist_length(occur));
+	return memory_copy(occur, occur[0] + 1);
 }
 
 int ** copy_occurlist(Formula * formula)
 {
-	int ** result = malloc((formula->n_vars + 1) * sizeof * result);
-	for (int var = 0; var <= formula->n_vars; var++)
-		result[var] = formula->occurlist[var] ? copy_occur(formula->occurlist[var]) : NULL;
+	int ** ol = malloc(formula->n_vars * sizeof * ol);
+	ol--;
+	for (int var = 1; var <= formula->n_vars; var++)
+		ol[var] = copy_occur(formula->occurlist[var]);
 
-	return result;
+	return ol;
 }
 
 int * copy_off_clauses(Formula * formula)
@@ -149,39 +152,47 @@ int * copy_lits(Formula * formula)
 	return memory_copy(formula->lits, formula->n_lits);
 }
 
+int * copy_clause_lengths(Formula * formula)
+{
+	return memory_copy(formula->clause_lengths, formula->n_clauses);
+}
+
 int * copy_assignments(Formula * formula)
 {
-	return memory_copy(formula->assignments, formula->n_vars + 1);
+	int * assignments = memory_copy(formula->assignments + 1, formula->n_vars);
+	return assignments - 1;
 }
 
 Formula * copy_formula(Formula * formula)
 {
-	Formula * res = malloc(sizeof * res);
+	Formula * f = malloc(sizeof * f);
 
-	res->n_vars = formula->n_vars;
-	res->n_clauses = formula->n_clauses;
-	res->n_lits = formula->n_lits;
+	f->n_vars = formula->n_vars;
+	f->n_clauses = formula->n_clauses;
+	f->n_lits = formula->n_lits;
 
 	// copy the occurlist
-	res->occurlist = copy_occurlist(formula);
-	res->off_clauses = copy_off_clauses(formula);
-	res->lits = copy_lits(formula);
+	f->occurlist = copy_occurlist(formula);
+	f->off_clauses = copy_off_clauses(formula);
+	f->lits = copy_lits(formula);
+	f->clause_lengths = copy_clause_lengths(formula);
 
-	res->i_lit = formula->i_lit;
-	res->assignments = copy_assignments(formula);
+	f->i_lit = formula->i_lit;
+	f->assignments = copy_assignments(formula);
 
-	return res;
+	return f;
 }
 
 Formula * del_formula(Formula * formula)
 {
-	for (int i = 1; i < formula->n_vars; i++)
-		occurlist_var_remove(formula, i);
+	for (int var = 1; var < formula->n_vars; var++)
+		free(formula->occurlist[var]);
 
-	free(formula->occurlist);
+	free(formula->occurlist + 1);
 	free(formula->off_clauses);
 	free(formula->lits);
-	free(formula->assignments);
+	free(formula->clause_lengths);
+	free(formula->assignments + 1);
 
 	free(formula);
 	return NULL;
@@ -197,54 +208,40 @@ int clause_maxlen(Formula * formula, int i)
 	return formula->off_clauses[i + 1] - formula->off_clauses[i];
 }
 
-Pair clause_length(Formula * formula, int clause_i)
+int clause_get_lit(Formula * formula, int clause_i, int n)
 {
 	int * clause = clause_get(formula, clause_i);
-	Pair len_last = { 0, 0 };
-	int maxlen = clause_maxlen(formula, clause_i);
-	for (int i = 0; i < maxlen && clause[i] != formula->n_vars + 1; i++) {
-		if (clause[i] != 0) {
-			len_last.a++;
-			len_last.b = clause[i];
-		}
-	}
-	return len_last;
+	if (n > formula->clause_lengths[clause_i]) return 0;
+
+	for (int i = 0; ; i++)
+		if (clause[i] != 0)
+			if (--n == 0)
+				return clause[i];
+
+	return 0;
 }
 
 void clause_remove(Formula * formula, int clause_i)
 {
-	const int clause_tombstone = formula->n_vars + 1;
 	int * clause = clause_get(formula, clause_i);
 
-	int maxlen = clause_maxlen(formula, clause_i);
-	for (int i = 0; i < maxlen && clause[i] != clause_tombstone; i++)
-		if (clause[i] != 0)
+	for (int i = 0, c = 0; c < formula->clause_lengths[clause_i]; i++) {
+		if (clause[i] != 0) {
 			occurlist_lit_remove(formula, formula->off_clauses[clause_i] + i);
+			c++;
+		}
+	}
 
-	clause[0] = clause_tombstone;
+	clause[0] = formula->n_vars + 1;
 
-	// shifting all the clause offsets, including the extra final tick
-	for (int i = clause_i; i < formula->n_clauses; i++) {
+	// shifting all the clause offsets and lengths, including the extra final tick for OC
+	for (int i = clause_i; ; i++) {
 		formula->off_clauses[i] = formula->off_clauses[i + 1];
+		if (i == formula->n_clauses - 1) break;
+		formula->clause_lengths[i] = formula->clause_lengths[i + 1];
 	}
 
 	formula->n_clauses--;
-}
-
-int binary_search(int * arr, int len, int x)
-{
-	int start = 0;
-	int end = len;
-
-	while (start < end) {
-		int mid = (start + end) / 2;
-		if (x < arr[mid])
-			end = mid;
-		else
-			start = mid + 1;
-	}
-
-	return start - 1;
 }
 
 int clause_i_for_offset(Formula * formula, int offset)
@@ -263,10 +260,11 @@ void lits_add(Formula * formula, int lit)
 	formula->lits[formula->i_lit++] = lit;
 }
 
-void lits_remove(Formula * formula, int offset)
+void lits_remove(Formula * formula, int offset, int clause_i)
 {
 	occurlist_lit_remove(formula, offset);
 	formula->lits[offset] = 0;
+	formula->clause_lengths[clause_i]--;
 }
 
 Formula * read(FILE * fp)
@@ -322,6 +320,7 @@ Formula * read(FILE * fp)
 			}
 
 			result->off_clauses[i_clause + 1] = result->off_clauses[i_clause] + i_lit;
+			result->clause_lengths[i_clause] = i_lit;
 
 			i_clause++;
 		}
@@ -347,14 +346,14 @@ int unit_propagate(Formula * formula, int clause_i, int unit)
 	int * occur = formula->occurlist[var];
 
 	while (*occur != OL_END) {
+		int ci = clause_i_for_offset(formula, *occur);
 		if (formula->lits[*occur] == unit) {
-			int ci = clause_i_for_offset(formula, *occur);
 			if (ci <= clause_i)
 				clause_i--;
 			clause_remove(formula, ci);
 		}
 		else {
-			lits_remove(formula, *occur);
+			lits_remove(formula, *occur, ci);
 		}
 	}
 
@@ -372,13 +371,11 @@ int empty_clause_and_unit_propagate(Formula * formula)
 
 	while (formula->n_clauses != 0) {
 		for (i = 0; i < formula->n_clauses; i++) {
-			Pair len_last = clause_length(formula, i);
-
-			switch (len_last.a)
+			switch (formula->clause_lengths[i])
 			{
 				case 0: return 0;
 				case 1:
-					i = unit_propagate(formula, i, len_last.b);
+					i = unit_propagate(formula, i, clause_get_lit(formula, i, 1));
 					retry_last = (i >= 0) ? i : formula->n_clauses - 1;
 					continue;
 			}
@@ -386,7 +383,7 @@ int empty_clause_and_unit_propagate(Formula * formula)
 			if (i == retry_last) return 1;
 		}
 	}
-	return 2;
+	return 1;
 }
 
 int get_occurence(Formula * formula, int var, int i)
@@ -447,7 +444,7 @@ Formula * dpll_with_unit(Formula * formula, int unit)
 int choose_var_first(Formula * formula)
 {
 	for (int var = 1; var < formula->n_vars; var++)
-		if (formula->occurlist[var] != NULL)
+		if (formula->occurlist[var] != NULL && formula->occurlist[var][0] != OL_END)
 			return var;
 
 	return 0;
@@ -460,12 +457,12 @@ int consistent(Formula * formula)
 
 Formula * dpll(Formula * formula)
 {
+	if (consistent(formula)) return formula;
 	if (empty_clause_and_unit_propagate(formula) == 0)
 		return del_formula(formula);
+	if (consistent(formula)) return formula;
 	pure_variable_assignment(formula);
-
-	if (consistent(formula))
-		return formula;
+	if (consistent(formula)) return formula;
 
 	// choose a variable and recurse and recurse with its both modalities
 	// make a copy for first try, use the current one for the other if it comes to that
@@ -475,6 +472,14 @@ Formula * dpll(Formula * formula)
 		return exhibitA;
 
 	return dpll_with_unit(formula, -var);
+}
+
+void print_formula(Formula * formula)
+{
+	for (int var = 1; var <= formula->n_vars; var++) {
+		printf("%d ", formula->assignments[var] * var);
+	}
+	putchar('\n');
 }
 
 int main(int argc, char const *argv[])
@@ -502,10 +507,7 @@ int main(int argc, char const *argv[])
 	}
 	else {
 		puts("Satisfiable!");
-		for (int var = 1; var <= formula->n_vars; var++) {
-			printf("%d ", formula->assignments[var] * var);
-		}
-		putchar('\n');
+		print_formula(formula);
 	}
 
 	return 0;
