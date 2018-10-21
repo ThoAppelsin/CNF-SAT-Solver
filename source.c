@@ -277,7 +277,7 @@ void clause_remove(Formula * formula, int clause_i, int (*finder)(int *, int))
 
 int clause_i_for_offset(Formula * formula, int offset)
 {
-	return flooring_binary_search(formula->off_clauses, formula->n_clauses + 1, offset);
+	return flooring_binary_search(formula->off_clauses, formula->n_clauses_init + 1, offset);
 }
 
 void lits_add(Formula * formula, int lit, int cindex)
