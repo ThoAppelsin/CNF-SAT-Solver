@@ -2,12 +2,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdint.h>
 
 #define BUFFERSIZE 1024
 #define EXPLPC 4
 
 #define sign(x) ((x) >= 0 ? 1 : -1)
 #define bit(n) (1U << (n))
+#define bitsize(x) (sizeof (x) * 8)
 
 #define OL_START_POS -1
 #define OL_LEN -2
@@ -27,8 +29,10 @@ struct Formula_tag
 	int * lits;				// list (n_lits) of literals for the whole formula
 								// zero implies absence of literal, n_vars + 1 is a clause boundary
 	int i_lit;
-	int * assignments;		// 1-indexed list of (n_vars) of +/- 1s
+	uint32_t * assignments;		// list of (n_lits // 32 + 1) unsigned integers to hold bits for assignments
 } Formula;
+
+#define assignsize(f) (bitsize(*(f)->assignments))
 
 void secure_free(void * ptr)
 {
@@ -127,7 +131,7 @@ int * new_occurlist(int n_clauses)
 {
 	int * ol = malloc((n_clauses + 1) * sizeof * ol);
 	ol[0] = 0;
-	memset(ol, -1, n_clauses * sizeof * ol);
+	memset(ol + 1, -1, n_clauses * sizeof * ol);
 	return ol;
 }
 
@@ -154,18 +158,16 @@ Formula * new_formula(int n_vars, int n_clauses)
 	f->lits = malloc(f->n_lits * sizeof * f->lits);
 
 	f->i_lit = 0;
-	f->assignments = calloc(n_vars, sizeof * f->assignments);
-	// 1-indexed
-	f->assignments--;
+	f->assignments = calloc(n_vars / assignsize(f) + 1, sizeof * f->assignments);
 
 	return f;
 }
 
-int * memory_copy(int * src, int n)
+void * memory_copy(void * src, int n, size_t sz)
 {
 	if (src == NULL) return NULL;
 
-	int size = n * sizeof * src;
+	int size = n * sz;
 	int * res = malloc(size);
 	memcpy(res, src, size);
 	return res;
@@ -173,13 +175,13 @@ int * memory_copy(int * src, int n)
 
 int * copy_occurlist(int * ol)
 {
-	return ol == NULL ? NULL : memory_copy(ol, ol[0] + 1);
+	return ol == NULL ? NULL : memory_copy(ol, ol[0] + 1, sizeof *ol);
 }
 
 // copied occurlists are not to be extended
 int ** copy_occurlists(Formula * formula)
 {
-	int ** ols = malloc((2 * formula->n_vars + 1) * sizeof * ols);
+	int ** ols = malloc((2 * formula->n_vars + 1) * sizeof *ols);
 	ols += formula->n_vars;
 	for (int var = 1; var <= formula->n_vars; var++) {
 		ols[var] = copy_occurlist(formula->occurlists[var]);
@@ -192,18 +194,17 @@ int ** copy_occurlists(Formula * formula)
 
 int * copy_off_clauses(Formula * formula)
 {
-	return memory_copy(formula->off_clauses, formula->n_clauses_init + 1);
+	return memory_copy(formula->off_clauses, formula->n_clauses_init + 1, sizeof *formula->off_clauses);
 }
 
 int * copy_lits(Formula * formula)
 {
-	return memory_copy(formula->lits, formula->n_lits);
+	return memory_copy(formula->lits, formula->n_lits, sizeof *formula->lits);
 }
 
-int * copy_assignments(Formula * formula)
+uint32_t * copy_assignments(Formula * formula)
 {
-	int * assignments = memory_copy(formula->assignments + 1, formula->n_vars);
-	return assignments - 1;
+	return memory_copy(formula->assignments, formula->n_vars / assignsize(formula) + 1, sizeof *formula->assignments);
 }
 
 Formula * copy_formula(Formula * formula)
@@ -236,7 +237,7 @@ Formula * del_formula(Formula * formula)
 	free(formula->occurlists - formula->n_vars);
 	free(formula->off_clauses);
 	free(formula->lits);
-	free(formula->assignments + 1);
+	free(formula->assignments);
 
 	free(formula);
 	return NULL;
@@ -374,7 +375,9 @@ void unit_propagate(Formula * formula, int unit)
 		lits_remove(formula, -unit, formula->occurlists[-unit][1], occurlist_bs);
 	occurlist_lit_remove_all(formula, -unit);
 
-	formula->assignments[abs(unit)] = sign(unit);
+	if (unit > 0) {
+		formula->assignments[unit / assignsize(formula)] |= bit(unit % assignsize(formula));
+	}
 }
 
 // since unit propagation may introduce new unit clauses, this repeats itself until no change
@@ -426,7 +429,9 @@ void pure_variable_propagate(Formula * formula, int pure)
 	}
 
 	occurlist_lit_remove_all(formula, pure);
-	formula->assignments[abs(pure)] = sign(pure);
+	if (pure > 0) {
+		formula->assignments[pure / assignsize(formula)] |= bit(pure % assignsize(formula));
+	}
 }
 
 // since pure literal propagations may introduce new ones, this repeats itself until no change
@@ -563,7 +568,7 @@ Formula * dpll(Formula * formula)
 void print_formula(Formula * formula)
 {
 	for (int var = 1; var <= formula->n_vars; var++) {
-		printf("%d ", formula->assignments[var] * var);
+		printf("%d %d\n", var, !!(formula->assignments[var / assignsize(formula)] & bit(var % assignsize(formula))));
 	}
 	putchar('\n');
 }
