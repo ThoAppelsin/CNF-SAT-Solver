@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
 #define BUFFERSIZE 1024
 #define EXPLPC 4
 
@@ -24,7 +26,6 @@ struct Formula_tag
 	int * off_clauses;		// array (n_clauses + 1) of increasing numbers, starting with zero
 	int * lits;				// list (n_lits) of literals for the whole formula
 								// zero implies absence of literal, n_vars + 1 is a clause boundary
-	int * clause_lengths;	// list of (n_clauses) many clause length values, CL_NONE
 	int i_lit;
 	int * assignments;		// 1-indexed list of (n_vars) of +/- 1s
 } Formula;
@@ -71,11 +72,11 @@ int occurlist_first_search(int * occurlist, int cindex)
 
 int occurlist_last_search(int * occurlist, int cindex)
 {
-	int i = occurlist[0] + 1;
-	for ( ; i > 1; i--)
-		if (cindex > occurlist[i - 1])
+	int i = occurlist[0];
+	for ( ; i > 0; i--)
+		if (cindex > occurlist[i])
 			break;
-	return i;
+	return i + 1;
 }
 
 void occurlist_add(Formula * formula, int lit, int cindex, int (*finder)(int *, int))
@@ -110,16 +111,24 @@ void occurlist_lit_remove_all(Formula * formula, int lit)
 	formula->occurlists[lit] = NULL;
 }
 
-unsigned int occurlist_var_state(Formula * formula, int var)
-{
-	return
-		(formula->occurlists[var][0] > 0) |
-		(formula->occurlists[-var][0] > 0) << 1;
-}
-
 int occurlist_has_content(Formula * formula, int lit)
 {
 	return formula->occurlists[lit] != NULL && formula->occurlists[lit][0] != 0;
+}
+
+unsigned int occurlist_var_state(Formula * formula, int var)
+{
+	return
+		(occurlist_has_content(formula, -var) << 1) |
+		occurlist_has_content(formula, var);
+}
+
+int * new_occurlist(int n_clauses)
+{
+	int * ol = malloc((n_clauses + 1) * sizeof * ol);
+	ol[0] = 0;
+	memset(ol, -1, n_clauses * sizeof * ol);
+	return ol;
 }
 
 Formula * new_formula(int n_vars, int n_clauses)
@@ -129,21 +138,20 @@ Formula * new_formula(int n_vars, int n_clauses)
 	f->n_vars = n_vars;
 	f->n_clauses = n_clauses;
 	f->n_clauses_init = n_clauses;
-	f->n_lits = n_clauses * EXPLPC;
+	f->n_lits = n_clauses * (EXPLPC + 1);
 
 	// literals ranging from -var to var, 0 unused
 	f->occurlists = malloc((2 * n_vars + 1) * sizeof * f->occurlists);
 	// 0-centered
 	f->occurlists += n_vars;
 	for (int var = 1; var <= n_vars; var++) {
-		f->occurlists[var] = calloc(n_clauses + 1, sizeof * f->occurlists[var]);
-		f->occurlists[-var] = calloc(n_clauses + 1, sizeof * f->occurlists[-var]);
+		f->occurlists[var] = new_occurlist(n_clauses);
+		f->occurlists[-var] = new_occurlist(n_clauses);
 	}
 	f->occurlists[0] = NULL;
 	// plus 1 is for algorithm's efficiency
 	f->off_clauses = malloc((n_clauses + 1) * sizeof * f->off_clauses);
 	f->lits = malloc(f->n_lits * sizeof * f->lits);
-	f->clause_lengths = calloc(n_clauses, sizeof * f->clause_lengths);
 
 	f->i_lit = 0;
 	f->assignments = calloc(n_vars, sizeof * f->assignments);
@@ -192,11 +200,6 @@ int * copy_lits(Formula * formula)
 	return memory_copy(formula->lits, formula->n_lits);
 }
 
-int * copy_clause_lengths(Formula * formula)
-{
-	return memory_copy(formula->clause_lengths, formula->n_clauses_init);
-}
-
 int * copy_assignments(Formula * formula)
 {
 	int * assignments = memory_copy(formula->assignments + 1, formula->n_vars);
@@ -216,7 +219,6 @@ Formula * copy_formula(Formula * formula)
 	f->occurlists = copy_occurlists(formula);
 	f->off_clauses = copy_off_clauses(formula);
 	f->lits = copy_lits(formula);
-	f->clause_lengths = copy_clause_lengths(formula);
 
 	f->i_lit = formula->i_lit;
 	f->assignments = copy_assignments(formula);
@@ -234,7 +236,6 @@ Formula * del_formula(Formula * formula)
 	free(formula->occurlists - formula->n_vars);
 	free(formula->off_clauses);
 	free(formula->lits);
-	free(formula->clause_lengths);
 	free(formula->assignments + 1);
 
 	free(formula);
@@ -243,41 +244,23 @@ Formula * del_formula(Formula * formula)
 
 int * clause_get(Formula * formula, int i)
 {
-	if (formula->clause_lengths[i] == CL_NONE || i >= formula->n_clauses_init) return NULL;
-	return formula->lits + formula->off_clauses[i];
-}
-
-int clause_get_lit(Formula * formula, int clause_i, int n)
-{
-	int * clause = clause_get(formula, clause_i);
-	if (n > formula->clause_lengths[clause_i] && 0 >= n) return 0;
-
-	for (int i = 0; ; i++)
-		if (clause[i] != 0)
-			if (--n == 0)
-				return clause[i];
-
-	return 0;
+	if (i >= formula->n_clauses_init) return NULL;
+	int * clause = formula->lits + formula->off_clauses[i];
+	if (clause[0] == CL_NONE) return NULL;
+	return clause;
 }
 
 void clause_remove(Formula * formula, int clause_i, int (*finder)(int *, int))
 {
 	int * clause = clause_get(formula, clause_i);
+	if (clause == NULL) return;
 
-	for (int i = 0, c = 0; c < formula->clause_lengths[clause_i]; i++) {
-		if (clause[i] != 0) {
-			occurlist_lit_remove(formula, clause[i], clause_i, finder);
-			c++;
-		}
+	for (int i = 1; i <= clause[0]; i++) {
+		occurlist_lit_remove(formula, clause[i], clause_i, finder);
 	}
 
-	formula->clause_lengths[clause_i] = CL_NONE;
+	clause[0] = CL_NONE;
 	formula->n_clauses--;
-}
-
-int clause_i_for_offset(Formula * formula, int offset)
-{
-	return flooring_binary_search(formula->off_clauses, formula->n_clauses_init + 1, offset);
 }
 
 void lits_add(Formula * formula, int lit, int cindex)
@@ -294,18 +277,17 @@ void lits_add(Formula * formula, int lit, int cindex)
 void lits_remove(Formula * formula, int lit, int clause_i, int (*finder)(int *, int))
 {
 	int * clause = clause_get(formula, clause_i);
-	for (int i = 0, c = 0; c < formula->clause_lengths[clause_i]; i++) {
-		if (clause[i] != 0) {
-			if (clause[i] == lit) {
-				clause[i] = 0;
-				formula->clause_lengths[clause_i]--;
-			}
-			else {
-				c++;
-			}
-		}
+	if (clause == NULL) return;
 
+	int shift = 0;
+	for (int i = 1; i <= clause[0]; i++) {
+		clause[i - shift] = clause[i];
+		if (clause[i - shift] == lit) {
+			shift++;
+		}
 	}
+	clause[0] -= shift;
+
 	occurlist_lit_remove(formula, lit, clause_i, finder);
 }
 
@@ -351,6 +333,7 @@ Formula * read(FILE * fp)
 			int lit;
 			char * token = strtok(buffer, " ");
 
+			int size_index_offset = result->i_lit++;
 			while (token != NULL)
 			{
 				lit = atoi(token);
@@ -361,8 +344,8 @@ Formula * read(FILE * fp)
 				i_lit++;
 			}
 
-			result->off_clauses[i_clause + 1] = result->off_clauses[i_clause] + i_lit;
-			result->clause_lengths[i_clause] = i_lit;
+			result->off_clauses[i_clause + 1] = result->i_lit;
+			result->lits[size_index_offset] = i_lit;
 
 			i_clause++;
 		}
@@ -404,14 +387,17 @@ int empty_clause_and_unit_propagate(Formula * formula)
 
 	while (formula->n_clauses != 0) {
 		for (i = 0; i < formula->n_clauses_init; i++) {
-			switch (formula->clause_lengths[i])
-			{
-				case 0: return 0;
-				case 1:
-					unit_propagate(formula, clause_get_lit(formula, i, 1));
-					last_change = i;
-					bypass = 1;
-					continue;
+			int * clause = clause_get(formula, i);
+			if (clause != NULL) {
+				switch (clause[0])
+				{
+					case 0: return 0;
+					case 1:
+						unit_propagate(formula, clause[1]);
+						last_change = i;
+						bypass = 1;
+						continue;
+				}
 			}
 
 			if (!bypass && i >= last_change) return 1;
@@ -423,10 +409,7 @@ int empty_clause_and_unit_propagate(Formula * formula)
 
 int get_pure(Formula * formula, int var)
 {
-	unsigned int e_pos = occurlist_has_content(formula, var);
-	unsigned int e_neg = occurlist_has_content(formula, -var);
-
-	switch ((e_neg << 1) | e_pos) {
+	switch (occurlist_var_state(formula, var)) {
 		case 0b01:
 			return var;
 		case 0b10:
@@ -470,11 +453,43 @@ Formula * dpll_with_unit(Formula * formula, int unit)
 	return dpll(formula);
 }
 
+int unbiased_random(int n)
+{
+	int r;
+	do r = rand();
+	while (r >= RAND_MAX / n * n);
+	return r % n;
+}
+
+int * choices;
+
+void init_random(Formula * formula)
+{
+	srand((unsigned int) time(NULL));
+	choices = malloc(formula->n_vars * sizeof * choices);
+}
+
+void fin_random(void)
+{
+	free(choices);
+}
+
+int choose_var_rand(Formula * formula)
+{
+	int size_choices = 0;
+	for (int lit = 1; lit <= formula->n_vars; lit++)
+		if (occurlist_has_content(formula, lit))
+			choices[size_choices++] = lit;
+
+	return size_choices == 0 ? 0 : choices[unbiased_random(size_choices)];
+}
+
 int choose_var_first(Formula * formula)
 {
-	for (int var = 1; var < formula->n_vars; var++) {
+	for (int var = 1; var <= formula->n_vars; var++) {
 		if (occurlist_has_content(formula, var)) return var;
-		if (occurlist_has_content(formula, -var)) return -var;
+		// if (occurlist_has_content(formula, -var)) return -var;
+		// no need for this, as the pure variable assignment would catch it
 	}
 
 	return 0;
@@ -483,6 +498,40 @@ int choose_var_first(Formula * formula)
 int consistent(Formula * formula)
 {
 	return formula->n_clauses == 0;
+}
+
+void print_clauses(Formula * formula)
+{
+	puts("======= CLAUSES =======");
+	for (int i = 0; i < formula->n_clauses_init; i++)
+	{
+		int * clause = clause_get(formula, i);
+		if (clause == NULL) continue;
+		printf("%d > ", i);
+		for (int j = 1; j <= clause[0]; j++) {
+			printf("%d ", clause[j]);
+		}
+		putchar(10);
+	}
+	puts("======= CLAUSES =======");
+}
+
+void print_occurlists(Formula * formula)
+{
+	puts("======= OCCURLS =======");
+	for (int var = 1; var <= formula->n_vars; var++) {
+		for (int sign = -1; sign <= 1; sign += 2) {
+			int lit = var * sign;
+			int * ol = formula->occurlists[lit];
+			if (ol == NULL || ol[0] == 0) continue;
+			printf("%d > ", lit);
+			for (int i = 0; i <= ol[0]; i++) {
+				printf("%d ", ol[i]);
+			}
+			putchar(10);
+		}
+	}
+	puts("======= OCCURLS =======");
 }
 
 Formula * dpll(Formula * formula)
@@ -497,7 +546,12 @@ Formula * dpll(Formula * formula)
 	// choose a variable and recurse and recurse with its both modalities
 	// make a copy for first try, use the current one for the other if it comes to that
 	int var = choose_var_first(formula);
-	if (var == 0) return formula;
+	if (var == 0) {
+		printf("%d but no vars\n", formula->n_clauses);
+		print_clauses(formula);
+		print_occurlists(formula);
+		return formula;
+	}
 
 	Formula * exhibitA = dpll_with_unit(copy_formula(formula), var);
 	if (exhibitA != NULL)
@@ -533,7 +587,10 @@ int main(int argc, char const *argv[])
 		return -1;
 	}
 
+	init_random(formula);
 	formula = dpll(formula);
+	fin_random();
+
 	if (formula == NULL) {
 		puts("Unsatisfiable.");
 	}
