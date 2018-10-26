@@ -5,6 +5,8 @@ c    forced? no
 c    mixed sat? no
 c    clause length = 3
 c
-p cnf 1 2
--1 0
-1 0
+p cnf 2 4
+-1 2 0
+1 -2 0
+-1 -2 0
+1 2 0
