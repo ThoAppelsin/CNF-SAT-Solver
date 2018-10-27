@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include <assert.h>
 
 #define BUFFERSIZE 1024
 #define EXPLPC 4
@@ -22,13 +21,13 @@ int ** occurlists;
 int c_conf_size;
 int ol_conf_size;
 int cfg_size;
+int cfg_byte_size;
 
 void init_globals(void) {
-	assert(sbitstore == 32);
-
 	c_conf_size = (n_clauses - 1) / sbitstore + 1;
 	ol_conf_size = n_vars / sbitstore + 1;
-	cfg_size = (c_conf_size + 2 * ol_conf_size) * sizeof(bitstore);
+	cfg_size = c_conf_size + 2 * ol_conf_size;
+	cfg_byte_size = cfg_size * sizeof(bitstore);
 }
 
 void init_formula(void)
@@ -60,13 +59,8 @@ void clean_formula(void)
 	free(occurlists - n_vars);
 }
 
-int p_i_clause = 0;
-
 void lits_add(int lit, int i_clause)
 {
-	assert(i_clause >= p_i_clause);
-	p_i_clause = i_clause;
-
 	int * clause = clauses[i_clause];
 	if (clause[++clause[0]] == -1) {
 		clause = clauses[i_clause] = realloc(clause, (clause[0] * 2 + 1) * sizeof * clause);
@@ -155,9 +149,6 @@ void lit_propagate(bitstore * cconf, int lit)
 {
 	int * occurlist = occurlists[lit];
 	for (int i = 1; i <= occurlist[0]; i++) {
-		assert(occurlist[i] / sbitstore < c_conf_size);
-		assert(lit_occurs_clause(lit, occurlist[i]));
-
 		// mark the occurlist[i]th clause as satisfied
 		cconf[occurlist[i] / sbitstore] |= bit(occurlist[i] % sbitstore);
 	}
@@ -189,8 +180,6 @@ int c_len_reductions(bitstore * config)
 
 	for (int i = 0; i != last_edit; i++) {
 		if (i == n_clauses) i = 0;
-
-		assert(i / sbitstore < c_conf_size);
 		// sset of cconf at i, signifies that the clause i is satisfied
 		if (sset(cconf, i)) continue;
 
@@ -201,8 +190,6 @@ int c_len_reductions(bitstore * config)
 			int lit = clause[j];
 			int var = abs(lit);
 			int ispos = lit > 0;
-
-			assert(lit != 0);
 			
 			// if the literal is set to its opposite, it is not there
 			// sset of nconf at var, signifies that var is set to False
@@ -216,8 +203,6 @@ int c_len_reductions(bitstore * config)
 		switch (clen) {
 			case 0: return 0;
 			case 1:
-				assert(u_var / sbitstore < ol_conf_size);
-
 				var_assign(config, u_var, u_ispos);
 				last_edit = i ? i : n_clauses;
 		}
@@ -229,7 +214,7 @@ int c_len_reductions(bitstore * config)
 unsigned int e_occurrence_unsat(bitstore * cconf, int lit)
 {
 	int * occurlist = occurlists[lit];
-	for (int i = 1; i <= occurlist[0]; i++)
+	for (int i = occurlist[0]; i > 0; i--)
 		// return True if even one clause that it occurs is still not satisfied
 		if (!sset(cconf, occurlist[i]))
 			return 1U;
@@ -262,14 +247,10 @@ void purity_reduction(bitstore * config)
 
 		switch (var_state(cconf, i)) {
 			case 0b01:
-				assert(i / sbitstore < ol_conf_size);
-				assert(e_occurrence_unsat(cconf, i) && !e_occurrence_unsat(cconf, -i));
 				var_assign(config, i, 1);
 				last_edit = (i == 1) ? (n_vars + 1) : i;
 				break;
 			case 0b10:
-				assert(i / sbitstore < ol_conf_size);
-				assert(!e_occurrence_unsat(cconf, i) && e_occurrence_unsat(cconf, -i));
 				var_assign(config, i, 0);
 				last_edit = (i == 1) ? (n_vars + 1) : i;
 				break;
@@ -291,8 +272,8 @@ int all_satisfied(bitstore * cconf)
 
 bitstore * copy_config(bitstore * config)
 {
-	bitstore * cfg = malloc(cfg_size);
-	return memcpy(cfg, config, cfg_size);
+	bitstore * cfg = malloc(cfg_byte_size);
+	return memcpy(cfg, config, cfg_byte_size);
 }
 
 int lit_choose(bitstore * config)
@@ -336,10 +317,97 @@ bitstore * dpll_rec(bitstore * config)
 	return dpll_rec(configB);
 }
 
-bitstore * dpll(void)
+bitstore * dpll_depth(void)
 {
 	bitstore * config = calloc(c_conf_size + 2 * ol_conf_size, sizeof * config);
 	return dpll_rec(config);
+}
+
+typedef
+enum dpll_result_tag {
+	TBD,
+	FAIL,
+	SUCCESS
+} dpll_result;
+
+dpll_result dpll_step(bitstore * config)
+{
+	if (!c_len_reductions(config))
+		return FAIL;
+	purity_reduction(config);
+	if (all_satisfied(config))
+		return SUCCESS;
+
+	return TBD;
+}
+
+bitstore * dpll_breadth(void)
+{
+	size_t size = 1U << 22;
+	bitstore * prealloc = malloc(size * cfg_byte_size);
+	dpll_result * results = malloc(size * sizeof * results);
+
+	memset(prealloc, 0, cfg_byte_size);
+	results[0] = TBD;
+
+	int nTBD = 1;
+	int last = 1;
+
+	// continue until all become FAILs and one becomes SUCCESS
+	// last will remain the same, if all none turned out TBD or SUCCESS
+	while (nTBD) {
+		if (nTBD < last / 2 || last > size / 2) {
+			int old_last = last;
+			last--;
+			for (int i = 0; i <= last; i++) if (results[i] == FAIL) {
+				memcpy(prealloc + i * cfg_size, prealloc + last-- * cfg_size, cfg_byte_size);
+				results[i] = TBD; // we know it's not FAIL nor SUCCESS
+				while (results[last] == FAIL) last--;
+			}
+			last++;
+			printf("Consolidation compressed it by %.2f%%\n", 100.0 * last / old_last);
+		}
+
+		nTBD = 0;
+
+		for (int i = last - 1; i >= 0; i--) if (results[i] == TBD) {
+			bitstore * exhibit = prealloc + i * cfg_size;
+			bitstore * exhibitA;
+			bitstore * exhibitB;
+			int choice;
+
+			switch (results[i] = dpll_step(exhibit)) {
+				case TBD:
+					choice = lit_choose(exhibit);
+					if (choice != 0) {
+						exhibitA = exhibit;
+						exhibitB = memcpy(prealloc + last * cfg_size, exhibit, cfg_byte_size);
+
+						var_assign(exhibitA, choice, 1);
+						var_assign(exhibitB, choice, 0);
+
+						results[last++] = TBD;
+						nTBD += 2;
+
+						break;
+					}
+
+					results[i] = FAIL;
+					puts("This shouldn't happen.");
+				case FAIL:
+					break;
+				case SUCCESS:
+					exhibit = copy_config(exhibit);
+					free(prealloc);
+					free(results);
+					return exhibit;
+			}
+		}
+	}
+
+	free(prealloc);
+	free(results);
+	return NULL;
 }
 
 void print_assignments(bitstore * config, FILE * stream)
@@ -391,7 +459,7 @@ int main(int argc, char const *argv[])
 	}
 
 	init_globals();
-	bitstore * config = dpll();
+	bitstore * config = dpll_breadth();
 
 	if (config == NULL) {
 		puts("Unsatisfiable.");
