@@ -4,10 +4,27 @@
 #include <string.h>
 #include <math.h>
 
+// Uncomment the following for debug messages
+// #define DEBUG
+
 #define BUFFERSIZE 1024
 #define EXPLPC 4
 
+// DO NOT CHANGE bitstore something else than uint32_t
+// count_bits and least_bit_pos are not ready for that
 typedef uint32_t bitstore;
+
+typedef
+struct pair_tag {
+	int a, b;
+} pair;
+
+typedef
+enum dpll_result_tag {
+	TBD,
+	FAIL,
+	SUCCESS
+} dpll_result;
 
 #define sbitstore      (8 * sizeof(bitstore))
 #define bit(x)         (1U << (x))
@@ -17,8 +34,11 @@ typedef uint32_t bitstore;
 
 size_t n_clauses;
 size_t n_vars;
-bitstore ** clauses;
-bitstore ** occurlists;
+						// variables and clauses are 1-indexed
+bitstore ** clauses;	// 1s for existence of variables in modalities
+						// p/n modalities are at ith/-ith indices
+bitstore ** occurlists; // 1s for occurrence in clauses
+						// occurrence of neg modalities in neg indices
 
 int n_lits;
 float mean_occ_len;
@@ -28,6 +48,7 @@ size_t olconf_len;
 size_t cfg_len;
 size_t cfg_size;
 
+/* ==== Bit-operation Functions ==== */
 // https://stackoverflow.com/a/109025/2736228
 int count_bits(uint32_t i)
 {
@@ -36,6 +57,17 @@ int count_bits(uint32_t i)
 	return (((i + (i >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
 }
 
+// https://stackoverflow.com/a/757266/2736228
+uint8_t least_bit_pos(uint32_t v)
+{
+	static const uint8_t debruijnbitposition2[32] = {
+		0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8,
+		31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6, 11, 5, 10, 9
+	};
+	return debruijnbitposition2[((uint32_t)((v & (-v)) * 0x077cb531u)) >> 27];
+}
+
+/* ==== Initialization and Clean-up Functions ==== */
 void init_globals(void) {
 	cconf_len = n_clauses / sbitstore + 1;
 	olconf_len = n_vars / sbitstore + 1;
@@ -82,6 +114,7 @@ void clean_formula(void)
 	free(occurlists - n_vars);
 }
 
+/* ==== Functions for Reading and Populating Formula ==== */
 void lits_add(int lit, int i_clause)
 {
 	if (lit > 0) s_set(clauses[i_clause], lit);
@@ -144,6 +177,34 @@ spec_read:
 	return 1;
 }
 
+/* ==== Configuration Functions ==== */
+/* Configurations are descriptors of states with
+ * minimum memory footprint. They store:
+ *   - satisfied clause information
+ *   - negative variable assignments
+ *   - positive variable assignments
+ * The actual formula state can be recovered using
+ * the initial formula that stays constant, and using
+ * configurations.
+ *
+ * Specification:
+ *   - cconf, an array of bitstores where 1 in an index
+ *            means that the corresponding (c)lause is
+ *            satisfied
+ *   - nconf, an array of bitstores where 1 in an index
+ *            means that the corresponding literal is
+ *            fixed to be (n)egative, i.e. False
+ *   - pconf, similar to nconf
+ */
+bitstore * copy_config(bitstore * config)
+{
+	bitstore * cfg = malloc(cfg_size);
+	return memcpy(cfg, config, cfg_size);
+}
+
+/* Bit-storage makes some operations a breeze
+ * and this is one of its finest depictions.
+ */
 void lit_propagate(bitstore * cconf, int lit)
 {
 	bitstore * occurlist = occurlists[lit];
@@ -192,6 +253,10 @@ int clause_length(bitstore * config, int clause_i)
 
 	int c = 0;
 	for (int i = 0; i < olconf_len; i++) {
+		/* Count the positive literals in clauses which (&)
+		 * are not (~) set to its negative.
+		 * Vice versa.
+		 */
 		c += count_bits(pclause[i] & ~nconf[i]);
 		c += count_bits(nclause[i] & ~pconf[i]);
 	}
@@ -199,14 +264,85 @@ int clause_length(bitstore * config, int clause_i)
 	return c;
 }
 
-// https://stackoverflow.com/a/757266/2736228
-uint8_t least_bit_pos(uint32_t v)
+unsigned int e_occurrence_unsat(bitstore * cconf, int lit)
 {
-	static const uint8_t debruijnbitposition2[32] = {
-		0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8,
-		31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6, 11, 5, 10, 9
-	};
-	return debruijnbitposition2[((uint32_t)((v & (-v)) * 0x077cb531u)) >> 27];
+	bitstore * occurlist = occurlists[lit];
+	for (int i = 0; i < cconf_len; i++)
+		if (occurlist[i] & ~cconf[i])
+			// Occurrences that are (&) not (~) satisfied.
+			return 1U;
+	return 0U;
+}
+
+unsigned int var_state(bitstore * cconf, int var)
+{
+	return
+		e_occurrence_unsat(cconf, -var) << 1 |
+		e_occurrence_unsat(cconf, var);
+}
+
+unsigned int ass_state(bitstore * nconf, bitstore * pconf, int var)
+{
+	return
+		!!is_s_set(nconf, var) << 1 |
+		!!is_s_set(pconf, var);
+}
+
+void print_assignments(bitstore * config, FILE * stream)
+{
+	bitstore * nconf = config + cconf_len;
+	bitstore * pconf = nconf + olconf_len;
+
+	for (int i = 1; i <= n_vars; i++) {
+		switch (ass_state(nconf, pconf, i)) {
+			case 0b00:
+#if DEBUG // we always depict this case as assigned to 1
+				printf("Var #%d is unset\n", i);
+#endif
+			case 0b01:
+				fprintf(stream, "%d 1\n", i);
+				break;
+			case 0b11:
+#if DEBUG // we depict this case as assigned to 0, only if not DEBUG
+				printf("Var #%d is set for both\n", i);
+				break;
+#endif
+			case 0b10:
+				fprintf(stream, "%d 0\n", i);
+				break;
+		}
+	}
+}
+
+int lit_occurrence_count(bitstore * cconf, int lit)
+{
+	int c = 0;
+	bitstore * occurlist = occurlists[lit];
+
+	for (int i = 0; i < cconf_len; i++)
+		// Count occurrences that are (&) not (~) satisfied.
+		c += count_bits(occurlist[i] & ~cconf[i]);
+	return c;
+}
+
+int var_occurrence_count(bitstore * cconf, int var)
+{
+	return
+		lit_occurrence_count(cconf, var) +
+		lit_occurrence_count(cconf, -var);
+}
+
+int sat_count(bitstore * cconf)
+{
+	int c = 0;
+	for (int i = 0; i < cconf_len; i++)
+		c += count_bits(cconf[i]);
+	return c;
+}
+
+int all_satisfied(bitstore * cconf)
+{
+	return sat_count(cconf) == n_clauses;
 }
 
 int get_unit(bitstore * config, int clause_i)
@@ -218,6 +354,10 @@ int get_unit(bitstore * config, int clause_i)
 	
 	bitstore temp;
 	for (int i = 0; i < olconf_len; i++) {
+		/* Negative literals in a clause that are (&)
+		 * not (~) set to its positive.
+		 * Vice versa.
+		 */
 		temp = nclause[i] & ~pconf[i];
 		if (temp) return -(least_bit_pos(temp) + i * sbitstore);
 
@@ -228,15 +368,17 @@ int get_unit(bitstore * config, int clause_i)
 	return 0;
 }
 
+/* Reductions arising from clause length, which are:
+ *   - empty clause indicating impossibility to satisfy
+ *   - unit clause calling for literal assignment/propagation
+ */
 int c_len_reductions(bitstore * config)
 {
 	bitstore * cconf = config;
-
 	int last_edit = n_clauses + 1;
 
 	for (int i = 1; i != last_edit; i++) {
 		if (i == n_clauses + 1) i = 1;
-		// is_s_set of cconf at i, signifies that the clause i is satisfied
 		if (is_s_set(cconf, i)) continue;
 
 		switch (clause_length(config, i)) {
@@ -250,41 +392,15 @@ int c_len_reductions(bitstore * config)
 	return 1;
 }
 
-unsigned int e_occurrence_unsat(bitstore * cconf, int lit)
-{
-	bitstore * occurlist = occurlists[lit];
-	for (int i = 0; i < cconf_len; i++)
-		if (occurlist[i] & ~cconf[i])
-			// 1111 0000 occurrences
-			// 0011 1100 satisfied clauses
-			// 1100 0011 ~satisfied clauses
-			// 1100 0000 occurrences unsatisfied
-			return 1U;
-	return 0U;
-}
-
-unsigned int var_state(bitstore * cconf, int var)
-{
-	return e_occurrence_unsat(cconf, -var) << 1 | e_occurrence_unsat(cconf, var);
-}
-
-unsigned int ass_state(bitstore * nconf, bitstore * pconf, int var)
-{
-	return !!is_s_set(nconf, var) << 1 | !!is_s_set(pconf, var);
-}
-
 void purity_reduction(bitstore * config)
 {
 	bitstore * cconf = config;
 	bitstore * nconf = config + cconf_len;
 	bitstore * pconf = nconf + olconf_len;
-
 	int last_edit = n_vars + 1;
 
 	for (int i = 1; i != last_edit; i++) {
 		if (i == n_vars + 1) i = 1;
-
-		// skip the variables already set True/False
 		if (is_s_set(pconf, i) || is_s_set(nconf, i)) continue;
 
 		switch (var_state(cconf, i)) {
@@ -303,40 +419,8 @@ void purity_reduction(bitstore * config)
 	}
 }
 
-int sat_count(bitstore * cconf)
-{
-	int c = 0;
-	for (int i = 0; i < cconf_len; i++)
-		c += count_bits(cconf[i]);
-	return c;
-}
-
-int all_satisfied(bitstore * cconf)
-{
-	return sat_count(cconf) == n_clauses;
-}
-
-bitstore * copy_config(bitstore * config)
-{
-	bitstore * cfg = malloc(cfg_size);
-	return memcpy(cfg, config, cfg_size);
-}
-
-int lit_choose_starting(bitstore * config, int n)
-{
-	bitstore * nconf = config + cconf_len;
-	bitstore * pconf = nconf + olconf_len;
-
-	for (int i = n; i <= n_vars; i++)
-		if (ass_state(nconf, pconf, i) == 0b00)
-			return i;
-	for (int i = 1; i < n; i++)
-		if (ass_state(nconf, pconf, i) == 0b00)
-			return i;
-	return 0;
-}
-
-int lit_choose_first(bitstore * config)
+// UNUSED first non-determined variable
+int var_choose_first(bitstore * config)
 {
 	bitstore * nconf = config + cconf_len;
 	bitstore * pconf = nconf + olconf_len;
@@ -347,7 +431,8 @@ int lit_choose_first(bitstore * config)
 	return 0;
 }
 
-int lit_choose_last(bitstore * config)
+// UNUSED last non-determined variable
+int var_choose_last(bitstore * config)
 {
 	bitstore * nconf = config + cconf_len;
 	bitstore * pconf = nconf + olconf_len;
@@ -358,25 +443,8 @@ int lit_choose_last(bitstore * config)
 	return 0;
 }
 
-int lit_occurrence_count(bitstore * cconf, int lit)
-{
-	int c = 0;
-	bitstore * occurlist = occurlists[lit];
-
-	for (int i = 0; i < cconf_len; i++)
-		c += count_bits(~cconf[i] & occurlist[i]);
-
-	return c;
-}
-
-int var_occurrence_count(bitstore * cconf, int var)
-{
-	return
-		lit_occurrence_count(cconf, var) +
-		lit_occurrence_count(cconf, -var);
-}
-
-int lit_choose_max_occur_var(bitstore * config)
+// UNUSED most frequent non-determined variable
+int var_choose_max_occur(bitstore * config)
 {
 	bitstore * nconf = config + cconf_len;
 	bitstore * pconf = nconf + olconf_len;
@@ -397,71 +465,8 @@ int lit_choose_max_occur_var(bitstore * config)
 	return max_i;
 }
 
-typedef
-struct pair_tag {
-	int a, b;
-} pair;
-
-pair lo_count_power(bitstore * config, int lit)
-{
-	bitstore * cconf = config;
-
-	bitstore * occurlist = occurlists[lit];
-	int c = 0;
-	int p = 0;
-
-	for (int i = 0; i < cconf_len; i++) {
-		bitstore occ = ~cconf[i] & occurlist[i];
-		while (occ) {
-			int pos = least_bit_pos(occ);
-			c++;
-			if (clause_length(config, i * 8 * sizeof occ + pos) == 2) p++;
-			occ &= ~bit(pos);
-		}
-		
-		// while (occ) {
-			// if (occ & 1U) {
-				// c++;
-				// if (clause_length(config, clause_i) == 2) p++;
-			// }
-			// occ >>= 1;
-			// clause_i++;
-		// }
-	}
-
-	return (pair){ c, p };
-}
-
-int lit_choose_max_occur_power(bitstore * config)
-{
-	bitstore * nconf = config + cconf_len;
-	bitstore * pconf = nconf + olconf_len;
-
-	int max = -1;
-	int max_i = 0;
-
-	for (int var = 1; var <= n_vars; var++)
-	if (ass_state(nconf, pconf, var) == 0b00) {
-		pair cp_pos = lo_count_power(config, var);
-		pair cp_neg = lo_count_power(config, -var);
-		
-		int unsat_count = n_clauses - sat_count(config);
-		int f = round(mean_occ_len * unsat_count / n_clauses);
-		int score_pos = cp_pos.a + f * cp_neg.b;
-		int score_neg = cp_neg.a + f * cp_pos.b;
-
-		int temp = score_pos;
-		score_pos += score_neg * 0.75;
-		score_neg += temp * 0.75;
-
-		if (score_pos > max) max = score_pos, max_i = var;
-		if (score_neg > max) max = score_neg, max_i = -var;
-	}
-
-	return max_i;
-}
-
-int lit_choose_min_occur_var(bitstore * config)
+// UNUSED least frequent non-determined variable
+int var_choose_min_occur(bitstore * config)
 {
 	bitstore * nconf = config + cconf_len;
 	bitstore * pconf = nconf + olconf_len;
@@ -482,7 +487,8 @@ int lit_choose_min_occur_var(bitstore * config)
 	return min_i;
 }
 
-int lit_choose_max_occur_lit(bitstore * config)
+// UNUSED most frequent non-determined literal
+int lit_choose_max_occur(bitstore * config)
 {
 	bitstore * nconf = config + cconf_len;
 	bitstore * pconf = nconf + olconf_len;
@@ -508,7 +514,8 @@ int lit_choose_max_occur_lit(bitstore * config)
 	return max_i;
 }
 
-int lit_choose_min_occur_lit(bitstore * config)
+// UNUSED least frequent non-determined literal
+int lit_choose_min_occur(bitstore * config)
 {
 	bitstore * nconf = config + cconf_len;
 	bitstore * pconf = nconf + olconf_len;
@@ -534,6 +541,86 @@ int lit_choose_min_occur_lit(bitstore * config)
 	return min_i;
 }
 
+/* An important function counting the occurrences, and
+ * calculating a power measure for a given literal.
+ * Power is the number of clauses in which this literal
+ * exists along with one and only one another literal.
+ *
+ * Importance of power is that, if this literal is set
+ * to be False, then the other literal in the clause will
+ * be a unit literal, causing further propagations.
+ */
+pair lit_oc_and_p(bitstore * config, int lit)
+{
+	bitstore * cconf = config;
+	bitstore * occurlist = occurlists[lit];
+	pair cp = { 0, 0 };
+
+	for (int i = 0; i < cconf_len; i++) {
+		bitstore occ = ~cconf[i] & occurlist[i];
+		while (occ) {
+			int pos = least_bit_pos(occ);
+			cp.a++;
+			if (clause_length(config, i * 8 * sizeof occ + pos) == 2)
+				cp.b++;
+			occ &= ~bit(pos);
+		}
+	}
+
+	return cp;
+}
+
+/* [USED!] Literal with the highest score.
+ * Score for a literal is the sum of:
+ *   - Number of clauses in which the literal
+ *     occurs
+ *   - (f)actor times the power of the negative
+ *     of the literal where (f)actor is current
+ *     estimate for mean occurrence count of a
+ *     variable
+ *   - The above two for the negative of the
+ *     literal, multiplied by 0.75
+ * 
+ * The rationale behind the score is:
+ *   - Number of occurrences of the literal itself
+ *     will be the amount of clauses that will be
+ *     cleaned up
+ *   - Power of the literal will generate that many
+ *     unit clauses, each one cleaning up (f)actor
+ *     many clauses, and more
+ *   - In case of wrong decision, the opposite
+ *     should not be in bad condition, either
+ */
+int lit_choose_max_occur_power(bitstore * config)
+{
+	bitstore * nconf = config + cconf_len;
+	bitstore * pconf = nconf + olconf_len;
+
+	int max = -1;
+	int max_i = 0;
+
+	for (int var = 1; var <= n_vars; var++)
+	if (ass_state(nconf, pconf, var) == 0b00) {
+		pair cp_pos = lit_oc_and_p(config, var);
+		pair cp_neg = lit_oc_and_p(config, -var);
+		
+		int unsat_count = n_clauses - sat_count(config);
+		int f = round(mean_occ_len * unsat_count / n_clauses);
+		int score_pos = cp_pos.a + f * cp_neg.b;
+		int score_neg = cp_neg.a + f * cp_pos.b;
+
+		int temp = score_pos;
+		score_pos += score_neg * 0.75;
+		score_neg += temp * 0.75;
+
+		if (score_pos > max) max = score_pos, max_i = var;
+		if (score_neg > max) max = score_neg, max_i = -var;
+	}
+
+	return max_i;
+}
+
+// Sanity check for debugging purposes under failure
 void sanity(bitstore * config)
 {
 	bitstore * cconf = config;
@@ -571,6 +658,9 @@ void sanity(bitstore * config)
 	}
 }
 
+/* Recursive approach to the SAT problem
+ * used by the depth-first searcher.
+ */
 bitstore * dpll_rec(bitstore * config)
 {
 	if (!c_len_reductions(config)) {
@@ -585,8 +675,10 @@ bitstore * dpll_rec(bitstore * config)
 
 	int choice = lit_choose_max_occur_power(config);
 	if (choice == 0) {
+#if DEBUG
 		puts("This shouldn't happen.");
 		sanity(config);
+#endif
 		free(config);
 		return NULL;
 	}
@@ -602,19 +694,18 @@ bitstore * dpll_rec(bitstore * config)
 	return dpll_rec(configB);
 }
 
+/* Depth-first SAT solver, uses less memory
+ * but takes more time.
+ */
 bitstore * dpll_depth(void)
 {
 	bitstore * config = calloc(cfg_len, sizeof * config);
 	return dpll_rec(config);
 }
 
-typedef
-enum dpll_result_tag {
-	TBD,
-	FAIL,
-	SUCCESS
-} dpll_result;
-
+/* Makes a DPLL configuration advance by a step,
+ * results in FAIL, SUCCESS, or TBD (to-be-determined).
+ */
 dpll_result dpll_step(bitstore * config)
 {
 	if (!c_len_reductions(config))
@@ -626,6 +717,9 @@ dpll_result dpll_step(bitstore * config)
 	return TBD;
 }
 
+/* Breadth-first SAT solver, uses more memory
+ * but takes less time, whenever the problem is SAT.
+ */
 bitstore * dpll_breadth(void)
 {
 	size_t length = (1ULL << 18) / cfg_size;
@@ -647,7 +741,9 @@ bitstore * dpll_breadth(void)
 	// last will remain the same, if all none turned out TBD or SUCCESS
 	while (nTBD) {
 		if (nTBD < last / 2 || last > length / 2) {
-			// int old_last = last;
+#if DEBUG
+			int old_last = last;
+#endif
 			last--;
 			for (int i = 0; i <= last; i++) if (results[i] == FAIL) {
 				memcpy(prealloc + i * cfg_len, prealloc + last-- * cfg_len, cfg_size);
@@ -655,13 +751,17 @@ bitstore * dpll_breadth(void)
 				while (results[last] == FAIL) last--;
 			}
 			last++;
-			// printf("Consolidation compressed it by %.2f%%\n", 100.0 * last / old_last);
+#if DEBUG
+			printf("Consolidation by %.2f%%\n", 100.0 * last / old_last);
+#endif
 		}
 		if (last > length / 2) {
 			length *= 2;
 			prealloc = realloc(prealloc, length * cfg_size);
 			results = realloc(results, length * sizeof * results);
-			// printf("size increase!\n");
+#if DEBUG
+			printf("size increase!\n");
+#endif
 			if (prealloc == NULL || results == NULL) {
 				fprintf(stderr, "Need more memory than system allows.\n");
 				return NULL;
@@ -708,27 +808,6 @@ bitstore * dpll_breadth(void)
 	free(prealloc);
 	free(results);
 	return NULL;
-}
-
-void print_assignments(bitstore * config, FILE * stream)
-{
-	bitstore * nconf = config + cconf_len;
-	bitstore * pconf = nconf + olconf_len;
-
-	for (int i = 1; i <= n_vars; i++) {
-		switch (ass_state(nconf, pconf, i)) {
-			case 0b00:
-				printf("Var #%d is unset\n", i);
-			case 0b01:
-				fprintf(stream, "%d 1\n", i);
-				break;
-			case 0b10:
-				fprintf(stream, "%d 0\n", i);
-				break;
-			case 0b11:
-				printf("Var #%d is set for both\n", i);
-		}
-	}
 }
 
 int main(int argc, char const *argv[])
