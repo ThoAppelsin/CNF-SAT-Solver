@@ -15,10 +15,9 @@ typedef uint32_t bitstore;
 #define is_s_set(s, i) mask((s)[(i) / sbitstore], (i) % sbitstore)
 #define s_set(s, i)    (s)[(i) / sbitstore] |= bit((i) % sbitstore)
 
-
 size_t n_clauses;
 size_t n_vars;
-int ** clauses;
+bitstore ** clauses;
 bitstore ** occurlists;
 
 int n_lits;
@@ -29,8 +28,16 @@ size_t olconf_len;
 size_t cfg_len;
 size_t cfg_size;
 
+// https://stackoverflow.com/a/109025/2736228
+int count_bits(uint32_t i)
+{
+	i = i - ((i >> 1) & 0x55555555);
+	i = (i & 0x33333333) + ((i >> 2) & 0x33333333);
+	return (((i + (i >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
+}
+
 void init_globals(void) {
-	cconf_len = (n_clauses - 1) / sbitstore + 1;
+	cconf_len = n_clauses / sbitstore + 1;
 	olconf_len = n_vars / sbitstore + 1;
 	cfg_len = cconf_len + 2 * olconf_len;
 	cfg_size = cfg_len * sizeof(bitstore);
@@ -40,15 +47,19 @@ void init_formula(void)
 {
 	init_globals();
 
-	clauses = malloc(n_clauses * sizeof * clauses);
+	clauses = malloc((2 * n_clauses + 1) * sizeof * clauses);
+	clauses += n_clauses;
+	clauses[0] = NULL;
+
 	occurlists = malloc((2 * n_vars + 1) * sizeof * occurlists);
 	occurlists += n_vars;
 	occurlists[0] = NULL;
 
-	for (int i = 0; i < n_clauses; i++) {
-		clauses[i] = calloc(EXPLPC + 2, sizeof * clauses[i]);
-		clauses[i][EXPLPC + 1] = -1;
+	for (int i = 1; i <= n_clauses; i++) {
+		clauses[i] = calloc(olconf_len, sizeof * clauses[i]);
+		clauses[-i] = calloc(olconf_len, sizeof * clauses[i]);
 	}
+
 	for (int i = 1; i <= n_vars; i++) {
 		occurlists[i] = calloc(cconf_len, sizeof * occurlists[i]);
 		occurlists[-i] = calloc(cconf_len, sizeof * occurlists[-i]);
@@ -57,25 +68,24 @@ void init_formula(void)
 
 void clean_formula(void)
 {
-	for (int i = 0; i < n_clauses; i++) free(clauses[i]);
+	for (int i = 1; i <= n_clauses; i++) {
+		free(clauses[i]);
+		free(clauses[-i]);
+	}
+
 	for (int i = 1; i <= n_vars; i++) {
 		free(occurlists[i]);
 		free(occurlists[-i]);
 	}
-	free(clauses);
+
+	free(clauses - n_clauses);
 	free(occurlists - n_vars);
 }
 
 void lits_add(int lit, int i_clause)
 {
-	int * clause = clauses[i_clause];
-	if (clause[++clause[0]] == -1) {
-		clause = clauses[i_clause] = realloc(clause, (clause[0] * 2 + 1) * sizeof * clause);
-		memset(clause + clause[0] + 1, 0, (clause[0] - 1) * sizeof * clause);
-		clause[clause[0] * 2] = -1;
-	}
-	clause[clause[0]] = lit;
-
+	if (lit > 0) s_set(clauses[i_clause], lit);
+	else         s_set(clauses[-i_clause], -lit);
 	s_set(occurlists[lit], i_clause);
 	n_lits++;
 }
@@ -85,47 +95,38 @@ int read(FILE * fp)
 	char buffer[BUFFERSIZE];
 
 	while (fgets(buffer, BUFFERSIZE, fp) != NULL)
-	{
-		if (*buffer == 'c') {
-			// a comment
-		}
-		else if (*buffer == 'p') {
-			// the spec
+	switch (*buffer) {
+		case 'c': // a comment
+			break;
+		case 'p': // the spec
 			if (sscanf(buffer, "p cnf %u %u", &n_vars, &n_clauses) != 2) {
 				fputs("Error at the spec line.\n", stderr);
 				return 0;
 			}
-			break;
-		}
-		else {
-			fputs("Couldn't find spec line as the first non-comment line.\n", stderr);
+			goto spec_read;
+		default:
+			fputs("Spec line missing, malformed file.\n", stderr);
 			return 0;
-		}
 	}
+spec_read:
 
 	init_formula();
 
 	int i_clause = 0;
-	while (i_clause < n_clauses && fgets(buffer, BUFFERSIZE, fp) != NULL)
-	{
-		if (*buffer == 'c') {
-			// a comment
-		}
-		else {
-			// a clause
+	while (i_clause < n_clauses && fgets(buffer, BUFFERSIZE, fp) != NULL) {
+		if (*buffer == 'c') { /* a comment */ }
+		else { // a clause
 			int lit;
 			char * token = strtok(buffer, " ");
+			i_clause++;
 
-			while (token != NULL)
-			{
+			while (token != NULL) {
 				lit = atoi(token);
 				if (lit == 0) break;
 
 				lits_add(lit, i_clause);
 				token = strtok(NULL, " ");
 			}
-
-			i_clause++;
 		}
 	}
 	mean_occ_len = (float) n_lits / n_vars;
@@ -141,15 +142,6 @@ int read(FILE * fp)
 	}
 
 	return 1;
-}
-
-int lit_occurs_clause(int lit, int i_clause)
-{
-	int * clause = clauses[i_clause];
-	for (int i = 1; i <= clause[0]; i++)
-		if (clause[i] == lit)
-			return 1;
-	return 0;
 }
 
 void lit_propagate(bitstore * cconf, int lit)
@@ -191,41 +183,67 @@ void lit_assign(bitstore * config, int lit)
 	lit_propagate(cconf, lit);
 }
 
+int clause_length(bitstore * config, int clause_i)
+{
+	bitstore * nconf = config + cconf_len;
+	bitstore * pconf = nconf + olconf_len;
+	bitstore * pclause = clauses[clause_i];
+	bitstore * nclause = clauses[-clause_i];
+
+	int c = 0;
+	for (int i = 0; i < olconf_len; i++) {
+		c += count_bits(pclause[i] & ~nconf[i]);
+		c += count_bits(nclause[i] & ~pconf[i]);
+	}
+
+	return c;
+}
+
+// https://stackoverflow.com/a/757266/2736228
+uint8_t least_bit_pos(uint32_t v)
+{
+	static const uint8_t debruijnbitposition2[32] = {
+		0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8,
+		31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6, 11, 5, 10, 9
+	};
+	return debruijnbitposition2[((uint32_t)((v & (-v)) * 0x077cb531u)) >> 27];
+}
+
+int get_unit(bitstore * config, int clause_i)
+{
+	bitstore * nconf = config + cconf_len;
+	bitstore * pconf = nconf + olconf_len;
+	bitstore * pclause = clauses[clause_i];
+	bitstore * nclause = clauses[-clause_i];
+	
+	bitstore temp;
+	for (int i = 0; i < olconf_len; i++) {
+		temp = nclause[i] & ~pconf[i];
+		if (temp) return -(least_bit_pos(temp) + i * sbitstore);
+
+		temp = pclause[i] & ~nconf[i];
+		if (temp) return least_bit_pos(temp) + i * sbitstore;
+	}
+
+	return 0;
+}
+
 int c_len_reductions(bitstore * config)
 {
 	bitstore * cconf = config;
-	bitstore * nconf = config + cconf_len;
-	bitstore * pconf = nconf + olconf_len;
 
-	int last_edit = n_clauses;
+	int last_edit = n_clauses + 1;
 
-	for (int i = 0; i != last_edit; i++) {
-		if (i == n_clauses) i = 0;
+	for (int i = 1; i != last_edit; i++) {
+		if (i == n_clauses + 1) i = 1;
 		// is_s_set of cconf at i, signifies that the clause i is satisfied
 		if (is_s_set(cconf, i)) continue;
 
-		int * clause = clauses[i];
-		int clen = 0;
-		int u_var, u_ispos;
-		for (int j = 1; j <= clause[0]; j++) {
-			int lit = clause[j];
-			int var = abs(lit);
-			int ispos = lit > 0;
-			
-			// if the literal is set to its opposite, it is not there
-			// is_s_set of nconf at var, signifies that var is set to False
-			// is_s_set of pconf at var, signifies that var is set to True
-			if (!is_s_set(ispos ? nconf : pconf, var)) {
-				clen++;
-				u_var = var;
-				u_ispos = ispos;
-			}
-		}
-		switch (clen) {
+		switch (clause_length(config, i)) {
 			case 0: return 0;
 			case 1:
-				var_assign(config, u_var, u_ispos);
-				last_edit = i ? i : n_clauses;
+				lit_assign(config, get_unit(config, i));
+				last_edit = (i == 1) ? (n_clauses + 1) : i;
 		}
 	}
 
@@ -285,13 +303,17 @@ void purity_reduction(bitstore * config)
 	}
 }
 
+int sat_count(bitstore * cconf)
+{
+	int c = 0;
+	for (int i = 0; i < cconf_len; i++)
+		c += count_bits(cconf[i]);
+	return c;
+}
+
 int all_satisfied(bitstore * cconf)
 {
-	for (int i = 0; i < n_clauses; i++)
-		// return False if any clause left unsatisfied
-		if (!is_s_set(cconf, i))
-			return 0;
-	return 1;
+	return sat_count(cconf) == n_clauses;
 }
 
 bitstore * copy_config(bitstore * config)
@@ -336,39 +358,13 @@ int lit_choose_last(bitstore * config)
 	return 0;
 }
 
-// https://stackoverflow.com/a/109025/2736228
-int number_of_set_bits(uint32_t i)
-{
-	i = i - ((i >> 1) & 0x55555555);
-	i = (i & 0x33333333) + ((i >> 2) & 0x33333333);
-	return (((i + (i >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
-}
-
-int num_set_bits(bitstore s)
-{
-	int num = 0;
-	while (s) {
-		if (s & 1) num++;
-		s >>= 1;
-	}
-	return num;
-}
-
-int sat_count(bitstore * cconf)
-{
-	int c = 0;
-	for (int i = 0; i < cconf_len; i++)
-		c += number_of_set_bits(cconf[i]);
-	return c;
-}
-
 int lit_occurrence_count(bitstore * cconf, int lit)
 {
 	int c = 0;
 	bitstore * occurlist = occurlists[lit];
 
 	for (int i = 0; i < cconf_len; i++)
-		c += number_of_set_bits(~cconf[i] & occurlist[i]);
+		c += count_bits(~cconf[i] & occurlist[i]);
 
 	return c;
 }
@@ -409,31 +405,28 @@ struct pair_tag {
 pair lo_count_power(bitstore * config, int lit)
 {
 	bitstore * cconf = config;
-	bitstore * nconf = config + cconf_len;
-	bitstore * pconf = nconf + olconf_len;
 
+	bitstore * occurlist = occurlists[lit];
 	int c = 0;
 	int p = 0;
-	bitstore * occurlist = occurlists[lit];
 
 	for (int i = 0; i < cconf_len; i++) {
 		bitstore occ = ~cconf[i] & occurlist[i];
-		int clause_i = i * 8 * sizeof occ;
 		while (occ) {
-			if (occ & 1U) {
-				c++;
-				int n_rest = 0;
-				int * clause = clauses[clause_i];
-				for (int j = 1; j <= clause[0]; j++) {
-					if (clause[j] != lit && ass_state(nconf, pconf, abs(clause[j])) == 0b00) {
-						n_rest++;
-					}
-				}
-				if (n_rest == 1) p++;
-			}
-			occ >>= 1;
-			clause_i++;
+			int pos = least_bit_pos(occ);
+			c++;
+			if (clause_length(config, i * 8 * sizeof occ + pos) == 2) p++;
+			occ &= ~bit(pos);
 		}
+		
+		// while (occ) {
+			// if (occ & 1U) {
+				// c++;
+				// if (clause_length(config, clause_i) == 2) p++;
+			// }
+			// occ >>= 1;
+			// clause_i++;
+		// }
 	}
 
 	return (pair){ c, p };
@@ -445,7 +438,7 @@ int lit_choose_max_occur_power(bitstore * config)
 	bitstore * pconf = nconf + olconf_len;
 
 	int max = -1;
-	int max_i;
+	int max_i = 0;
 
 	for (int var = 1; var <= n_vars; var++)
 	if (ass_state(nconf, pconf, var) == 0b00) {
@@ -541,6 +534,43 @@ int lit_choose_min_occur_lit(bitstore * config)
 	return min_i;
 }
 
+void sanity(bitstore * config)
+{
+	bitstore * cconf = config;
+	bitstore * nconf = config + cconf_len;
+	bitstore * pconf = nconf + olconf_len;
+
+	for (int i = 1; i <= n_clauses; i++) {
+		bitstore * pclause = clauses[i];
+		bitstore * nclause = clauses[-i];
+		int ok = 0;
+		if (is_s_set(cconf, i)) {
+			for (int j = 0; j < olconf_len; j++) {
+				if (pclause[j] & pconf[j] || nclause[j] & nconf[j]) {
+					ok = 1;
+					break;
+				}
+			}
+			if (!ok)
+				printf("insanity: c%d satisfied, no lits of it is true\n", i);
+		}
+		else {
+			ok = 1;
+			for (int j = 0; j < olconf_len; j++) {
+				if (pclause[j] & pconf[j] || nclause[j] & nconf[j]) {
+					ok = 0;
+					printf("insanity: c%d unsat, with some lits true\n", i);
+					break;
+				}
+			}
+		}
+
+		if (!ok) {
+			puts("something's not ok");
+		}
+	}
+}
+
 bitstore * dpll_rec(bitstore * config)
 {
 	if (!c_len_reductions(config)) {
@@ -556,6 +586,7 @@ bitstore * dpll_rec(bitstore * config)
 	int choice = lit_choose_max_occur_power(config);
 	if (choice == 0) {
 		puts("This shouldn't happen.");
+		sanity(config);
 		free(config);
 		return NULL;
 	}
@@ -573,7 +604,7 @@ bitstore * dpll_rec(bitstore * config)
 
 bitstore * dpll_depth(void)
 {
-	bitstore * config = calloc(cconf_len + 2 * olconf_len, sizeof * config);
+	bitstore * config = calloc(cfg_len, sizeof * config);
 	return dpll_rec(config);
 }
 
@@ -597,12 +628,12 @@ dpll_result dpll_step(bitstore * config)
 
 bitstore * dpll_breadth(void)
 {
-	size_t length = (1ULL << 30) / cfg_size;
+	size_t length = (1ULL << 18) / cfg_size;
 	bitstore * prealloc = malloc(length * cfg_size);
 	dpll_result * results = malloc(length * sizeof * results);
 
-	if (prealloc == NULL) {
-		puts("malloc failed for prealloc");
+	if (prealloc == NULL || results == NULL) {
+		fprintf(stderr, "Need more memory than system allows.\n");
 		return NULL;
 	}
 
@@ -616,7 +647,7 @@ bitstore * dpll_breadth(void)
 	// last will remain the same, if all none turned out TBD or SUCCESS
 	while (nTBD) {
 		if (nTBD < last / 2 || last > length / 2) {
-			int old_last = last;
+			// int old_last = last;
 			last--;
 			for (int i = 0; i <= last; i++) if (results[i] == FAIL) {
 				memcpy(prealloc + i * cfg_len, prealloc + last-- * cfg_len, cfg_size);
@@ -624,7 +655,17 @@ bitstore * dpll_breadth(void)
 				while (results[last] == FAIL) last--;
 			}
 			last++;
-			printf("Consolidation compressed it by %.2f%%\n", 100.0 * last / old_last);
+			// printf("Consolidation compressed it by %.2f%%\n", 100.0 * last / old_last);
+		}
+		if (last > length / 2) {
+			length *= 2;
+			prealloc = realloc(prealloc, length * cfg_size);
+			results = realloc(results, length * sizeof * results);
+			// printf("size increase!\n");
+			if (prealloc == NULL || results == NULL) {
+				fprintf(stderr, "Need more memory than system allows.\n");
+				return NULL;
+			}
 		}
 
 		nTBD = 0;
@@ -637,7 +678,7 @@ bitstore * dpll_breadth(void)
 
 			switch (results[i] = dpll_step(exhibit)) {
 				case TBD:
-					choice = lit_choose_max_occur_var(exhibit);
+					choice = lit_choose_max_occur_power(exhibit);
 					if (choice != 0) {
 						exhibitA = exhibit;
 						exhibitB = memcpy(prealloc + last * cfg_len, exhibit, cfg_size);
@@ -717,17 +758,14 @@ int main(int argc, char const *argv[])
 		return -1;
 	}
 
-	bitstore * config = dpll_depth();
+	bitstore * config = dpll_breadth();
 
 	if (config == NULL) {
 		puts("Unsatisfiable.");
 	}
 	else {
 		puts("Satisfiable!");
-		print_assignments(config, stdout);
-		if (fw != NULL) {
-			print_assignments(config, fw);
-		}
+		print_assignments(config, (fw == NULL) ? stdout : fw);
 		free(config);
 	}
 
