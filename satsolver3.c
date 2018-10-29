@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 
 // Uncomment the following for debug messages
 // #define DEBUG
@@ -810,8 +811,16 @@ bitstore * dpll_breadth(void)
 	return NULL;
 }
 
+double ts_to_sec(struct timespec t)
+{
+	return t.tv_sec + t.tv_nsec * 1e-9;
+}
+
 int main(int argc, char const *argv[])
 {
+	struct timespec tstart, tend;
+	clock_gettime(CLOCK_REALTIME, &tstart);
+
 	if (argc < 2) {
 		fprintf(stderr, "Usage: %s problem.cnf\n", argv[0]);
 		return -1;
@@ -849,6 +858,9 @@ int main(int argc, char const *argv[])
 	}
 
 	clean_formula();
+
+	clock_gettime(CLOCK_REALTIME, &tend);
+	printf("Elapsed time: %fs\n", ts_to_sec(tend) - ts_to_sec(tstart));
 
 	return 0;
 }
