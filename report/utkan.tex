@@ -40,7 +40,7 @@ the structures we use for the heuristics we'll be employing.
 
 My implementation of the SAT solver is, again, in C, and
 is bundled with this document under the name
-\texttt{satsolver.c}. We have compiled it both on
+\texttt{satsolver3.c}. We have compiled it both on
 Windows (MinGW/gcc) and Ubuntu (gcc), with the
 \texttt{-Wall} flag enabled, and it should compile
 without warnings.
@@ -49,26 +49,70 @@ We have tested our implementation against memory
 leaks using \texttt{valgrind}, and it should have no
 memory leaks.
 
-\section{Satisfying solutions to 5 problems}
+\subsection{Compiling}
 
-Our implementation fails to provide a satisfying
-solution to the 4th problem under a reasonable amount
-of time, so we omit the output for it. While it was,
-at some point, able to give a satisfying assignment
-to the 5th problem, it cannot do so now, unfortunately.
-It is possible that the desktop computer we were trying
-with before was more capable, or some other reason
-during the course of development to improve the
-algorithm in speed and space efficiency.
+Following is the exact command we have
+been using to compile it on Windows:
 
-For problems 1, 2 and 3, the solutions can be found
-in files \texttt{problem1.sol}, \texttt{problem2.sol}
-and \texttt{problem3.sol}, respectively.
+\begin{center}
+    \begin{verbatim}
+        gcc -o3 -Wall .\satsolver3.c -o s3.exe
+    \end{verbatim}
+\end{center}
 
-\section{Determining satisfiability of 7 problems}
+The Ubuntu version is similar, but without the \texttt{.exe}
+file extension. You may use any other output file-name.
+The suffix 3 indicates that this is our third major release.
 
-Following are the satisfiability status of the
-corresponding problems, determined by our implementation.
+\subsection{Running}
+
+Following is an example command we have written to our command
+line on Ubuntu to use our program:
+
+\begin{center}
+    \begin{verbatim}
+        ./s3 SATproblem/problem11.cnf SATproblem/problem11.sol
+    \end{verbatim}
+\end{center}
+
+\texttt{SATproblem} is the directory where we were keeping the
+problems sent to us. First of the arguments given to the program
+is the input file in DIMACS CNF format.
+
+Second argument is optional, and when given, will be the output
+file of assignments. Each row in the output will start with
+a variable index and will have either a 0 for False assignment
+to that variable, or 1 for True, after a space character.
+When omitted, the output is printed to the standard output stream.
+
+The output file is only used for variable assignments,
+and not for any other output. There will be no variable
+assignments printed anywhere, if the CNF formula is decided to
+be unsatisfiable. Satisfiability of the problem will always
+be printed in the standard output stream. Finally, the
+runtime of the program in terms of wall-clock (not the CPU clock)
+will be printed to the standard output stream.
+
+\section{Satisfying solutions to the first 5 problems}
+
+Our latest implementation successfully provides satisfying
+assignments to each one of the problems ranging from 1 to 5
+in under 0.2 seconds on a 9-years-old desktop computer
+with Intel\textsuperscript{\textregistered} i7-960 CPU%
+\footnote{\url{https://ark.intel.com/products/37151/Intel-Core-i7-960-Processor-8M-Cache-3-20-GHz-4-80-GT-s-Intel-QPI-}}
+in it.
+
+The generated solution files using the second argument
+passed to our program are bundled with this report.
+The problem with the number \texttt{n} will have its
+solution in file \texttt{problem<n>.sol}, without
+the angle-brackets.
+
+\section{Determining satisfiability of the last 7 problems}
+
+Determined by our program, following are the
+satisfiability status of the corresponding problems,
+determined by our implementation.
 
 \begin{center}
     \begin{tabular}{l l}
@@ -84,62 +128,104 @@ corresponding problems, determined by our implementation.
 
 \section{Discussion about problem size and time it takes}
 
-As per request, here is the table of times it took for our
-SAT solver implementation to solve the previous 7 problems.
-We mention the problem characteristics in the table for
-further discussion. Problem \#10 was solved on a desktop
-computer with our algorithm before, but we could not
-get it solved in under 15 minutes on a 3-years-old
-tablet-like laptop, with which we are timing now.
+As per request, here is the table of times it took for our final
+SAT solver implementation to solve the last 7 out of the given 12
+problems. We mention the problem characteristics in the table for
+further discussion.
 
 \begin{center}
     \begin{tabular}{l || l | l | l | l || l}
     Problem\#  & Sat? & \#Vars & \#Clauses & \#C/\#V & Time (seconds) \\\hline
-    6          & Yes  & 50     & 100       & 2       & immediate \\
-    7          & No   & 50     & 100       & 2       & immediate \\
-    8          & Yes  & 50     & 300       & 6       & immediate \\
-    9          & Yes  & 100    & 200       & 2       & about 55 \\
-    10         & No   & 100    & 200       & 2       & over 15 minutes \\
-    11         & Yes  & 100    & 600       & 6       & immediate \\
-    12         & Yes  & 200    & 1200      & 6       & about 25
+    6          & Yes  & 50     & 100       & 2       & 0.002 \\
+    7          & No   & 50     & 100       & 2       & 0.043 \\
+    8          & Yes  & 50     & 300       & 6       & 0.003 \\
+    9          & Yes  & 100    & 200       & 2       & 0.012 \\
+    10         & No   & 100    & 200       & 2       & 26.34 \\
+    11         & Yes  & 100    & 600       & 6       & 0.013 \\
+    12         & Yes  & 200    & 1200      & 6       & 0.207
     \end{tabular}
 \end{center}
 
-It is hard to find a correlation in this data,
-as there are too many data points with the immediate
-output.
+All the computations were carried out on the same machine as
+described in the previous sections. The timing is done using
+the \texttt{clock\_gettime} function provided by the standard
+library, and we have tested whether it is actually regarding
+the wall-clock time or not, by using a real-life chronometer
+on problem 10 at the same time. Given that both the chronometer
+reading and the program were telling very similar times, we
+believe the measurements done by the library function represents
+the wall-clock time passed accurately enough.
 
-It looks like the problem is solved rather quickly for;
-\begin{itemize}
-    \item Problems with a fewer variables.
-    \item Problems with a higher clause-to-variable ratio.
-\end{itemize}
+As an additional note, the timer in the code encloses everything,
+including the I/O on reading the file and outputing the assignments,
+which are time-consuming operations in terms of the wall-clock time.
 
-It makes sense that fewer variables makes the problem
-easier, as the search space is exponential with the
-power of number of variables. It also makes sense
-that increase in clause-to-variable ratio affects
-runtimes positively, since more clauses increase the chance
-for us to encounter more unit-clauses and empty-clauses
-which are the boosting heuristics of our implementation
-of DPLL.
+\subsection{Analysis}
 
-Problems with many variables and too few clauses seem
-to take the longest. Specifically when the problem
-is unsatisfiable, the attempting to exhaust the search
-space becomes much harder when there aren't enough
-clauses to introduce unit-clauses and empty-clauses.
+We first have to note here that our implementation incorporates
+a breadth-first manner of searching for a satisfying assignment
+to the formula. This makes our program robust against the
+positive/negative branch taken with the variable choice
+after each turn of reductions, as both of the branches are
+taken at essentially the same time.
+
+As we can see from the timings of problems 6 and 8, and 9 and 11,
+execution time for a problem is practically only dependent on
+the number of variables, and is not changing as the number of clauses
+increases/decreases, with our implementation. The very slight
+increase can partly be attributed to the longer reading time
+of the file, and increased amount of memory allocations for the
+data structures.
+
+For satisfiable problems, execution time is around
+0.002, 0.012 and 0.207 seconds for variable counts
+50, 100 and 200, respectively. We cannot tell much
+with just this data, but we can say that the runtimes
+are super-linear in terms of number of variables in
+the formula.
+
+The execution times with the unsatisfiable problems are noticably
+higher than the execution times of the satisfiable problems with
+similar variable counts, and even more than that. Problem 7,
+for example, requires much more time than problem 6 and 8,
+but also 9 and 11. This is due to the fact that our algorithm
+has to exhaust the whole search tree to tell that the formula
+is not satisfiable.
+
+Results are as expected, with the most interesting outcome
+being the execution time being almost entirely indifferent
+about the number of clauses in the problem set provided to us.
 
 \section{Bonus: Comparison with Minisat}
 
-Compared to the Minisat, our implementation suffers from
-heavy memory usage and exessive computation time,
-specifically with the 4th problem.
+Compared to the Minisat, our final implementation is not
+performing that bad, except for perhaps the problem \#10.
+We have tried very hard to make our program as memory
+efficient as possible. It now uses around 256 KB memory with
+problems other than \#10, and about 32 MB memory to
+decide that \#10 is unsatisfiable.
+
+Clause-learning, we believe, would be of great help to our
+program in its journey towards exhausting the search
+tree faster to conclude that a problem is unsatisfiable.
+Despite the fact that problem \#10 takes a considerable
+amount of time, we are very much content with our results.
+
+We can only wish that the students taking this course in
+the following years are not made to bother much about
+low-level optimization opportunities and technicalities
+of SAT solvers, and are allowed to hand in their
+solvers in higher level languages. We believe that
+students will be able to learn more and implement more
+of the available techniques if they were to stay away
+from the cumbersome nature of C and Java.
+
+\subsection{Discussion about problem 4}
 
 I had been discussing this homework with a friend of mine
-studying SAT problems abroad in CMU, and just today
-he got curious about this specific problem that my
-implementation is struggling with. He said it could
+studying SAT problems abroad in CMU, and at some point
+he got curious about this specific problem 4 that my older
+implementation was struggling to solve. He said it could
 be a ``Random SAT'', and then tested this using
 his WalkSAT algorithm written in Python.
 
@@ -149,8 +235,8 @@ that it is a Random SAT problem, and then informed me
 that it is very much expected that a DPLL implementation
 will suffer against it.
 
-While I am sure I could have improved my implementation,
-specifically at its memory consumption, this explanation
-of his did bring me some relief.
+My latest SAT solver does not really suffer against
+problem 4 anymore, but I believe this to be an important
+thing to note regardless.
 
 \end{document}

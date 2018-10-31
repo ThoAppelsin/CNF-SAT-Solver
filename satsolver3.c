@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include <math.h>
 #include <time.h>
 
 // Uncomment the following for debug messages
@@ -33,8 +32,8 @@ enum dpll_result_tag {
 #define is_s_set(s, i) mask((s)[(i) / sbitstore], (i) % sbitstore)
 #define s_set(s, i)    (s)[(i) / sbitstore] |= bit((i) % sbitstore)
 
-size_t n_clauses;
-size_t n_vars;
+unsigned int n_clauses;
+unsigned int n_vars;
 						// variables and clauses are 1-indexed
 bitstore ** clauses;	// 1s for existence of variables in modalities
 						// p/n modalities are at ith/-ith indices
@@ -42,12 +41,19 @@ bitstore ** occurlists; // 1s for occurrence in clauses
 						// occurrence of neg modalities in neg indices
 
 int n_lits;
-float mean_occ_len;
+double mean_occ_len;
 
 size_t cconf_len;
 size_t olconf_len;
 size_t cfg_len;
 size_t cfg_size;
+
+/* ==== Function for Rounding Positive Doubles ==== */
+// This is to avoid complications of including math.h on Linux
+int round_pos(double d)
+{
+	return d + 0.5;
+}
 
 /* ==== Bit-operation Functions ==== */
 // https://stackoverflow.com/a/109025/2736228
@@ -146,7 +152,7 @@ spec_read:
 
 	init_formula();
 
-	int i_clause = 0;
+	unsigned int i_clause = 0;
 	while (i_clause < n_clauses && fgets(buffer, BUFFERSIZE, fp) != NULL) {
 		if (*buffer == 'c') { /* a comment */ }
 		else { // a clause
@@ -163,7 +169,7 @@ spec_read:
 			}
 		}
 	}
-	mean_occ_len = (float) n_lits / n_vars;
+	mean_occ_len = (double) n_lits / n_vars;
 
 	if (i_clause != n_clauses) {
 		fprintf(stderr, "%u/%u clauses are missing.\n", n_clauses - i_clause, n_clauses);
@@ -451,7 +457,7 @@ int var_choose_max_occur(bitstore * config)
 	bitstore * pconf = nconf + olconf_len;
 
 	int max = 0;
-	int max_i;
+	int max_i = 0;
 
 	for (int i = 1; i <= n_vars; i++) {
 		if (ass_state(nconf, pconf, i) == 0b00) {
@@ -473,7 +479,7 @@ int var_choose_min_occur(bitstore * config)
 	bitstore * pconf = nconf + olconf_len;
 
 	int min = 2 * n_clauses;
-	int min_i;
+	int min_i = 0;
 
 	for (int i = 1; i <= n_vars; i++) {
 		if (ass_state(nconf, pconf, i) == 0b00) {
@@ -495,7 +501,7 @@ int lit_choose_max_occur(bitstore * config)
 	bitstore * pconf = nconf + olconf_len;
 
 	int max = 0;
-	int max_i;
+	int max_i = 0;
 
 	for (int i = 1; i <= n_vars; i++) {
 		if (ass_state(nconf, pconf, i) == 0b00) {
@@ -522,7 +528,7 @@ int lit_choose_min_occur(bitstore * config)
 	bitstore * pconf = nconf + olconf_len;
 
 	int min = n_clauses;
-	int min_i;
+	int min_i = 0;
 
 	for (int i = 1; i <= n_vars; i++) {
 		if (ass_state(nconf, pconf, i) == 0b00) {
@@ -606,7 +612,7 @@ int lit_choose_max_occur_power(bitstore * config)
 		pair cp_neg = lit_oc_and_p(config, -var);
 		
 		int unsat_count = n_clauses - sat_count(config);
-		int f = round(mean_occ_len * unsat_count / n_clauses);
+		int f = round_pos(mean_occ_len * unsat_count / n_clauses);
 		int score_pos = cp_pos.a + f * cp_neg.b;
 		int score_neg = cp_neg.a + f * cp_pos.b;
 
