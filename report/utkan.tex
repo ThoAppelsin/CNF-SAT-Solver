@@ -56,7 +56,7 @@ been using to compile it on Windows:
 
 \begin{center}
     \begin{verbatim}
-        gcc -o3 -Wall .\satsolver3.c -o s3.exe
+        gcc -O3 -Wall .\satsolver3.c -o s3.exe
     \end{verbatim}
 \end{center}
 
@@ -93,11 +93,31 @@ be printed in the standard output stream. Finally, the
 runtime of the program in terms of wall-clock (not the CPU clock)
 will be printed to the standard output stream.
 
+For smaller problems, our program spends most of its time on
+printing the result onto screen, whenever the second argument is
+not given. Evidently, file buffer flushed onto file takes much
+less time than 50-200 lines flushed onto screen line-buffered.
+
+While we could change our code to make standard output also
+full-buffered programmatically, we considered this issue to be
+rather minor, and instead used a dummy file to dump the results
+onto, for the times we were just measuring the time per problem.
+Following is the command we have used for all of the timing
+results that you will see in the rest of the report:
+
+\begin{center}
+    \begin{verbatim}
+        ./s3.exe SATproblem/problem9.cnf dump.sol
+    \end{verbatim}
+\end{center}
+
 \section{Satisfying solutions to the first 5 problems}
 
 Our latest implementation successfully provides satisfying
 assignments to each one of the problems ranging from 1 to 5
-in under 0.2 seconds on a 9-years-old desktop computer
+in 0.030 seconds (30 milliseconds) on average, and at most
+in 0.078 seconds (78 milliseconds, for question \#4) on a
+9-years-old desktop computer
 with Intel\textsuperscript{\textregistered} i7-960 CPU%
 \footnote{\url{https://ark.intel.com/products/37151/Intel-Core-i7-960-Processor-8M-Cache-3-20-GHz-4-80-GT-s-Intel-QPI-}}
 in it.
@@ -136,13 +156,13 @@ further discussion.
 \begin{center}
     \begin{tabular}{l || l | l | l | l || l}
     Problem\#  & Sat? & \#Vars & \#Clauses & \#C/\#V & Time (seconds) \\\hline
-    6          & Yes  & 50     & 100       & 2       & 0.002 \\
-    7          & No   & 50     & 100       & 2       & 0.043 \\
-    8          & Yes  & 50     & 300       & 6       & 0.003 \\
-    9          & Yes  & 100    & 200       & 2       & 0.012 \\
-    10         & No   & 100    & 200       & 2       & 26.34 \\
-    11         & Yes  & 100    & 600       & 6       & 0.013 \\
-    12         & Yes  & 200    & 1200      & 6       & 0.207
+    6          & Yes  & 50     & 100       & 2       & 0.001 \\
+    7          & No   & 50     & 100       & 2       & 0.022 \\
+    8          & Yes  & 50     & 300       & 6       & 0.001 \\
+    9          & Yes  & 100    & 200       & 2       & 0.003 \\
+    10         & No   & 100    & 200       & 2       & 12.90 \\
+    11         & Yes  & 100    & 600       & 6       & 0.005 \\
+    12         & Yes  & 200    & 1200      & 6       & 0.090
     \end{tabular}
 \end{center}
 

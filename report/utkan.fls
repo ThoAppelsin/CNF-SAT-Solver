@@ -1,6 +1,8 @@
-PWD c:/Users/utkan/Downloads/Git/CNF-SAT-Solver/report
+PWD C:/Users/utkan/OneDrive/Desktop/Universite/Verification/Assignments/A3/report
+INPUT c:/texlive/2018/texmf.cnf
+INPUT c:/texlive/2018/texmf-dist/web2c/texmf.cnf
 INPUT c:/texlive/2018/texmf-var/web2c/pdftex/pdflatex.fmt
-INPUT c:/Users/utkan/Downloads/Git/CNF-SAT-Solver/report/utkan.tex
+INPUT utkan.tex
 OUTPUT utkan.log
 INPUT c:/texlive/2018/texmf-dist/tex/latex/base/article.cls
 INPUT c:/texlive/2018/texmf-dist/tex/latex/base/article.cls
